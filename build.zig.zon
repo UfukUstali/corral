@@ -1,0 +1,18 @@
+.{
+    .name = .corral,
+    .version = "0.2.0",
+    .fingerprint = 0x8a619f779598f3a6, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .ghostty = .{
+            .url = "https://github.com/ghostty-org/ghostty/archive/7d748097a069768e12fa9bf63d598215a3e8f7a3.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBC3NdMQWYThN7inmL6l_-kl8GvdwMOuXoxKW8GQME",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}

@@ -1,0 +1,16 @@
+# zig build
+.zig-cache/
+zig-out/
+
+# Dependencies unpacked by the package manager. Ghostty and its vendored C
+# libraries are ~450MB of them, so this one matters.
+zig-pkg/
+
+# nix / direnv
+.direnv/
+result
+result-*
+
+# editors
+.idea
+.DS_Store

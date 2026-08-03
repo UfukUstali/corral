@@ -168,7 +168,7 @@ code a real terminal would use — including scrollback, wide characters, and
 replies to the queries programs send when they want to know what they are
 running inside.
 
-The TUI is hand-written, about 500 lines across `Grid.zig` and the drawing
+The TUI is custom made, about 500 lines across `Grid.zig` and the drawing
 half of `App.zig`. A panel and one output pane did not justify a framework,
 and owning the cell grid means a task's screen can be blitted straight across
 rather than translated into somebody else's cell model. Colours pass through

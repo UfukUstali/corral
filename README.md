@@ -116,11 +116,14 @@ so `h` gets you back to whatever else is around.
 | `s` / `S` | start the task / everything in this config |
 | `x` / `X` / `r` | stop / force kill / restart |
 | `^u` `^d` `^e` `^y`, PgUp/PgDn, `g` / `G` | scroll output |
+| wheel | scroll the focused task's output, three lines a notch |
 | `w` | dump the task's scrollback to the host terminal |
 | `z` | zoom (hide the panel) |
 | `q` | stop everything and quit |
 
-While a task is focused, every key goes straight to it — including `^c`.
+While a task is focused, every key goes straight to it — including `^c`. The
+wheel is the exception: corral keeps that one, unless the program running in
+the task asked for the mouse itself.
 
 ## Discovery
 
@@ -141,9 +144,18 @@ process is started.
 
 ## Two deliberate design choices
 
-**The mouse is left alone.** corral never enables mouse reporting, so your
-terminal's own selection, scrollback and ctrl-click-to-open-link keep working
-over task output.
+**The mouse is left alone, until a task is focused.** With the list in front
+corral enables no mouse reporting at all, so your terminal's own selection,
+scrollback and ctrl-click-to-open-link keep working over task output.
+
+Focusing a task turns reporting on, because the alternative is worse: in the
+alternate screen with reporting off, terminals turn the wheel into arrow keys,
+and a dev server that is not reading its input echoes those back as `^[[A`.
+With it on, the wheel scrolls the task's own scrollback instead — and a
+program that asked for the mouse itself (vim, htop, lazygit) gets the events,
+while a full-screen one that did not still gets its arrow keys. The cost is
+that selection needs shift held while a task is focused, which every terminal
+that reports the mouse honours. `^a` hands the mouse straight back.
 
 **`w` hands the log back to the host terminal.** It leaves the alternate
 screen and prints the task's scrollback as ordinary output, so the host's
@@ -159,7 +171,7 @@ selection, search and hyperlink handling apply to it. Press enter to return.
 | `src/Task.zig` | a ghostty terminal plus the stopped/running/stopping machine |
 | `src/Term.zig` | the host terminal: raw mode, alternate screen, signals |
 | `src/Grid.zig` | a double-buffered cell grid that diffs frames into escape sequences |
-| `src/input.zig` | key decoding, for the list only |
+| `src/input.zig` | key decoding for the list, and mouse reports |
 | `src/App.zig` | layout, the event loop, the two-level list |
 
 Terminal emulation is [libghostty-vt][ghostty], used as a Zig module. It is

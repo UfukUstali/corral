@@ -12,6 +12,7 @@ const ghostty = @import("ghostty-vt");
 
 const Config = @import("Config.zig");
 const Pty = @import("Pty.zig");
+const input = @import("input.zig");
 
 const Allocator = std.mem.Allocator;
 const log = std.log.scoped(.task);
@@ -302,6 +303,72 @@ pub fn scrollbackOffset(self: *Task) usize {
     const bar = self.terminal.screens.active.pages.scrollbar();
     const bottom = bar.total -| bar.len;
     return bottom -| bar.offset;
+}
+
+// --- mouse ---------------------------------------------------------------
+
+/// True when the program running here asked to be sent mouse events itself.
+pub fn wantsMouse(self: *const Task) bool {
+    const m = &self.terminal.modes;
+    return m.get(.mouse_event_x10) or m.get(.mouse_event_normal) or
+        m.get(.mouse_event_button) or m.get(.mouse_event_any);
+}
+
+/// True when the program is on the alternate screen, which means it draws a
+/// whole screen of its own and there is no scrollback of ours behind it.
+pub fn onAltScreen(self: *const Task) bool {
+    return self.terminal.screens.active_key == .alternate;
+}
+
+/// What an arrow key sends to this program, which depends on whether it put
+/// its cursor keys in application mode.
+pub fn arrowKey(self: *const Task, dir: enum { up, down }) []const u8 {
+    const app = self.terminal.modes.get(.cursor_keys);
+    return switch (dir) {
+        .up => if (app) "\x1bOA" else "\x1b[A",
+        .down => if (app) "\x1bOB" else "\x1b[B",
+    };
+}
+
+/// Hand a mouse event to the program, at `col`/`row` in its own screen and
+/// encoded the way it asked for.
+///
+/// The host reports to corral in SGR whatever the program here understands,
+/// so this is a re-encoding rather than a pass-through.
+pub fn writeMouse(self: *Task, ev: input.Mouse, col: u16, row: u16) void {
+    const m = &self.terminal.modes;
+
+    // Motion is only interesting to the two modes that asked for it, and
+    // mode 9 predates the idea of reporting a release at all.
+    if (ev.motion() and !(m.get(.mouse_event_button) or m.get(.mouse_event_any))) return;
+    if (ev.release and !(m.get(.mouse_event_normal) or
+        m.get(.mouse_event_button) or m.get(.mouse_event_any))) return;
+
+    var buf: [32]u8 = undefined;
+    if (m.get(.mouse_format_sgr) or m.get(.mouse_format_sgr_pixels)) {
+        // Pixel coordinates (1016) would need a cell size corral has no way
+        // of knowing, so a program asking for those gets cells anyway.
+        const out = std.fmt.bufPrint(&buf, "\x1b[<{d};{d};{d}{c}", .{
+            ev.button,
+            col,
+            row,
+            @as(u8, if (ev.release) 'm' else 'M'),
+        }) catch return;
+        self.write(out);
+        return;
+    }
+
+    // The original encoding: three bytes offset by 32, so nothing past
+    // column 223 fits and a release is just "some button came up".
+    if (col > 223 or row > 223) return;
+    const button = if (ev.release) (ev.button & ~@as(u16, 0b11)) | 0b11 else ev.button;
+    if (button > 223 - 32) return;
+    const out = std.fmt.bufPrint(&buf, "\x1b[M{c}{c}{c}", .{
+        @as(u8, @intCast(32 + button)),
+        @as(u8, @intCast(32 + col)),
+        @as(u8, @intCast(32 + row)),
+    }) catch return;
+    self.write(out);
 }
 
 // --- presentation --------------------------------------------------------

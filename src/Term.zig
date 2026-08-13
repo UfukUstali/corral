@@ -19,6 +19,10 @@ saved: ?posix.termios = null,
 rows: u16 = 24,
 cols: u16 = 80,
 raw: bool = false,
+/// Whether we are currently asking the host to report the mouse. Kept as a
+/// wish rather than a fact, so leaving and re-entering the alternate screen
+/// restores it.
+mouse: bool = false,
 
 /// Read end of the self-pipe; the thing the event loop polls.
 sig_r: c.fd_t = -1,
@@ -109,10 +113,27 @@ pub fn enter(self: *Term) !void {
             "\x1b]2;corral\x07" ++
             "\x1b[2J",
     );
-    // Deliberately absent: any mouse reporting mode. Leaving the mouse to
-    // the host terminal is what keeps its own selection and ctrl-click
-    // working over task output.
+    if (self.mouse) self.writeAll(mouse_on);
 }
+
+/// Mouse reporting: button presses, releases and drags in the SGR encoding.
+///
+/// Off by default, and on only while a task is focused. With it off the host
+/// terminal owns the mouse, which is what keeps its own selection and
+/// ctrl-click working over task output; with it on the same gestures still
+/// work with shift held, which every terminal that reports the mouse honours.
+///
+/// The reason to turn it on at all: in the alternate screen with reporting
+/// off, terminals translate the wheel into arrow keys, and a task's program
+/// that is not reading its input then echoes them as `^[[A`.
+pub fn setMouse(self: *Term, on: bool) void {
+    if (self.mouse == on) return;
+    self.mouse = on;
+    if (self.raw) self.writeAll(if (on) mouse_on else mouse_off);
+}
+
+const mouse_on = "\x1b[?1002h\x1b[?1006h";
+const mouse_off = "\x1b[?1006l\x1b[?1002l";
 
 /// Put the terminal back exactly as we found it. Safe to call twice, and
 /// safe to call from a panic handler.
@@ -120,6 +141,9 @@ pub fn leave(self: *Term) void {
     if (!self.raw) return;
     self.raw = false;
 
+    // Before the alternate screen goes away, so the host is not left
+    // reporting the mouse over whatever was underneath it.
+    if (self.mouse) self.writeAll(mouse_off);
     self.writeAll(
         "\x1b[?7h" ++
             "\x1b[?25h" ++

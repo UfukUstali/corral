@@ -417,11 +417,6 @@ fn readInput(self: *App) !void {
     if (n <= 0) return;
     const data = buf[0..@intCast(n)];
 
-    if (self.focused) {
-        try self.forwardToTask(data);
-        return;
-    }
-
     // Escape sequences can straddle reads, so anything left over from last
     // time goes first.
     var joined: [1024 + 64]u8 = undefined;
@@ -430,10 +425,16 @@ fn readInput(self: *App) !void {
     @memcpy(joined[self.pending_len..total], data);
     self.pending_len = 0;
 
+    // Focus can flip mid-buffer, in either direction, so the mode is decided
+    // per chunk rather than once for the read.
     var i: usize = 0;
-    while (i < total) {
-        const decoded = input.decode(joined[i..total]);
-        if (decoded.len == 0) {
+    while (i < total and !self.quitting) {
+        const consumed = if (self.focused)
+            self.forwardToTask(joined[i..total])
+        else
+            try self.takeKey(joined[i..total]);
+
+        if (consumed == 0) {
             // Incomplete. Hold it for the next read; if it is really a bare
             // Escape, the worst case is that it acts on the next keystroke.
             const rest = total - i;
@@ -443,38 +444,48 @@ fn readInput(self: *App) !void {
             }
             return;
         }
-        try self.onKey(decoded.key);
-        if (self.quitting or self.focused) {
-            // The rest of this read belongs to the task now.
-            const rest = joined[i + decoded.len .. total];
-            if (self.focused and rest.len > 0) try self.forwardToTask(rest);
-            return;
-        }
-        i += decoded.len;
+        i += consumed;
     }
 }
 
-fn forwardToTask(self: *App, data: []const u8) !void {
+/// Decode one key for the list. Zero means the sequence is unfinished.
+fn takeKey(self: *App, buf: []const u8) !usize {
+    const decoded = input.decode(buf);
+    if (decoded.len == 0) return 0;
+    try self.onKey(decoded.key);
+    return decoded.len;
+}
+
+/// Pass bytes to the focused task, up to the first one that is corral's.
+/// Zero means an unfinished mouse report is all that is left.
+fn forwardToTask(self: *App, buf: []const u8) usize {
     // Ctrl-A is the one key corral keeps for itself while a task is focused.
-    if (std.mem.indexOfScalar(u8, data, 0x01)) |at| {
-        const before = data[0..at];
-        if (before.len > 0) self.writeToTask(before);
-        self.focused = false;
-        self.needs_paint = true;
-        const after = data[at + 1 ..];
-        if (after.len > 0) {
-            // Whatever followed is for corral, not the task.
-            var i: usize = 0;
-            while (i < after.len) {
-                const decoded = input.decode(after[i..]);
-                if (decoded.len == 0) break;
-                try self.onKey(decoded.key);
-                i += decoded.len;
-            }
-        }
-        return;
+    const ctrl_a = std.mem.indexOfScalar(u8, buf, 0x01);
+
+    // The mouse is corral's too: the host only reports it while a task is
+    // focused, and those reports are for us to act on, not for the task to
+    // print.
+    switch (input.scanMouse(buf)) {
+        .none => {},
+        .partial => |at| if (ctrl_a == null or ctrl_a.? > at) {
+            if (at == 0) return 0;
+            self.writeToTask(buf[0..at]);
+            return at;
+        },
+        .found => |report| if (ctrl_a == null or ctrl_a.? > report.at) {
+            if (report.at > 0) self.writeToTask(buf[0..report.at]);
+            self.onMouse(report.mouse);
+            return report.at + report.len;
+        },
     }
-    self.writeToTask(data);
+
+    const at = ctrl_a orelse {
+        self.writeToTask(buf);
+        return buf.len;
+    };
+    if (at > 0) self.writeToTask(buf[0..at]);
+    self.setFocus(false);
+    return at + 1;
 }
 
 fn writeToTask(self: *App, data: []const u8) void {
@@ -538,10 +549,51 @@ fn onKey(self: *App, key: input.Key) !void {
     }
 }
 
+/// Lines one wheel notch moves, matching what terminals send for it.
+const wheel_lines: isize = 3;
+
+/// A mouse report from the host, which only arrives while a task is focused.
+fn onMouse(self: *App, ev: input.Mouse) void {
+    const t = self.currentTask() orelse return;
+
+    // The program in the task asked for the mouse itself, so it gets the
+    // event, in its own coordinate space. Anything outside the output pane
+    // is not its business.
+    if (t.wantsMouse()) {
+        const col = std.math.sub(u16, ev.col, self.out_x) catch return;
+        if (col == 0 or col > self.out_w) return;
+        if (ev.row == 0 or ev.row > self.out_h) return;
+        t.writeMouse(ev, col, ev.row);
+        return;
+    }
+
+    const wheel = ev.wheel() orelse return;
+
+    // A full screen program has no scrollback of ours to move and expects
+    // the wheel as arrow keys, which is what alternate scroll mode would
+    // have sent it if corral were not reporting the mouse itself.
+    if (t.onAltScreen()) {
+        const key = t.arrowKey(switch (wheel) {
+            .up => .up,
+            .down => .down,
+        });
+        for (0..@intCast(wheel_lines)) |_| t.write(key);
+        return;
+    }
+
+    self.scroll(switch (wheel) {
+        .up => wheel_lines,
+        .down => -wheel_lines,
+    });
+}
+
 fn setFocus(self: *App, on: bool) void {
     if (self.level != .tasks) return;
     if (on and self.currentTask() == null) return;
     self.focused = on;
+    // The mouse belongs to the host terminal the rest of the time, so that
+    // its own selection and link handling keep working over task output.
+    self.term.setMouse(on);
     if (on) {
         if (self.currentTask()) |t| {
             t.scrollToBottom();
@@ -960,7 +1012,7 @@ fn drawFooter(self: *App) void {
     self.grid.fill(0, y, self.term.cols, .{});
 
     const hint = if (self.focused)
-        " ^a back to the list — every other key goes to the task"
+        " ^a back to the list — keys go to the task, wheel scrolls, shift-drag selects"
     else switch (self.level) {
         .configs => " j/k move  l enter  s start  S start all  q quit",
         .tasks => " j/k move  h back  l focus  s/x/r start stop restart  S all  w dump  z zoom  q quit",

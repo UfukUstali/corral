@@ -25,6 +25,8 @@ let
       ./build.zig.zon
       ./src
       ./README.md
+      ./skills
+      ./tests
     ];
   };
 

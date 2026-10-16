@@ -4,15 +4,19 @@ const App = @import("App.zig");
 const Config = @import("Config.zig");
 const Term = @import("Term.zig");
 const discover = @import("discover.zig");
+const Agent = @import("Agent.zig");
+const Ipc = @import("Ipc.zig");
 
 const usage =
     \\corral — run your dev processes side by side, in one view
     \\
     \\Usage: corral [-c <config>]
+    \\       corral agent <command> [options]
     \\
     \\Finds every corral.json under the working directory and lists them.
     \\`l` steps into one, `h` steps back out, `s` starts a task, `S` starts
     \\the whole config. Nothing runs until you ask it to.
+    \\Use `corral agent --help` for one-shot JSON commands to a running TUI.
     \\
 ;
 
@@ -21,6 +25,12 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+
+    // Agent mode must return before discovery, config loading or TUI setup.
+    if (args.len > 1 and std.mem.eql(u8, args[1], "agent")) {
+        try agentMain(gpa, io, args[2..]);
+        return;
+    }
 
     var explicit: ?[]const u8 = null;
     var i: usize = 1;
@@ -74,10 +84,53 @@ pub fn main(init: std.process.Init) !void {
         // The common way to hit this is a pipe or a CI log, where the real
         // answer is "corral needs a terminal", not a Zig error name.
         error.NotATerminal => fail(io, "needs a terminal to run in", .{}),
+        error.InstanceAlreadyRunning => fail(io, "a Corral instance is already running in {s}; use corral agent to query it", .{root}),
         // `run` restores the terminal on its way out, so anything else
         // prints onto a sane screen rather than into the alternate one.
         else => fail(io, "{t}", .{err}),
     };
+}
+
+fn agentMain(gpa: std.mem.Allocator, io: std.Io, args: []const []const u8) !void {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            try stdout(io, Agent.usage);
+            return;
+        }
+    }
+    const request = Agent.parse(args) catch |err| {
+        const response = try Agent.failure(gpa, "invalid_arguments", @errorName(err));
+        defer gpa.free(response);
+        try stdout(io, response);
+        try stdout(io, "\n");
+        std.process.exit(2);
+    };
+    const root = try std.process.currentPathAlloc(io, gpa);
+    defer gpa.free(root);
+    const response = Ipc.call(gpa, io, root, request) catch |err| {
+        const message = if (err == error.InstanceNotRunning)
+            try std.fmt.allocPrint(gpa, "No Corral instance is running in {s}. Tell the human to run `corral` in that directory in a terminal. Wait for them; do not launch Corral or the tasks yourself.", .{root})
+        else
+            try std.fmt.allocPrint(gpa, "Cannot reach the Corral instance: {t}. Tell the human. Do not launch a replacement instance or retry a control command automatically; its outcome may be unknown.", .{err});
+        defer gpa.free(message);
+        const body = try Agent.failure(gpa, if (err == error.InstanceNotRunning) "instance_not_running" else "instance_unavailable", message);
+        defer gpa.free(body);
+        try stdout(io, body);
+        try stdout(io, "\n");
+        std.process.exit(1);
+    };
+    defer gpa.free(response);
+    const parsed = std.json.parseFromSlice(struct { ok: bool }, gpa, response, .{ .ignore_unknown_fields = true }) catch {
+        const body = try Agent.failure(gpa, "invalid_response", "The running instance returned an invalid response. Tell the human.");
+        defer gpa.free(body);
+        try stdout(io, body);
+        try stdout(io, "\n");
+        std.process.exit(1);
+    };
+    defer parsed.deinit();
+    try stdout(io, response);
+    try stdout(io, "\n");
+    if (!parsed.value.ok) std.process.exit(1);
 }
 
 /// Add `abs` to the scan results if it is not already there.
@@ -126,6 +179,8 @@ fn fail(io: std.Io, comptime fmt: []const u8, args: anytype) noreturn {
 
 test {
     _ = @import("App.zig");
+    _ = @import("Agent.zig");
+    _ = @import("Ipc.zig");
     _ = @import("Config.zig");
     _ = @import("Grid.zig");
     _ = @import("Task.zig");

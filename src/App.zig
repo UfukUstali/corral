@@ -18,6 +18,8 @@ const Term = @import("Term.zig");
 const c = @import("c.zig");
 const discover = @import("discover.zig");
 const input = @import("input.zig");
+const Agent = @import("Agent.zig");
+const Ipc = @import("Ipc.zig");
 
 const Allocator = std.mem.Allocator;
 const log = std.log.scoped(.app);
@@ -76,6 +78,7 @@ pub const Entry = struct {
 gpa: Allocator,
 io: std.Io,
 term: Term,
+server: ?Ipc.Server = null,
 grid: Grid = .{},
 
 root: []const u8,
@@ -90,6 +93,8 @@ top: usize = 0,
 focused: bool = false,
 zoomed: bool = false,
 quitting: bool = false,
+/// The host owns the screen while `w` displays scrollback.
+dumping: bool = false,
 
 /// Set when something on screen changed. Cleared by `paint`.
 needs_paint: bool = true,
@@ -282,6 +287,13 @@ fn onResize(self: *App) !void {
 // --- event loop ----------------------------------------------------------
 
 pub fn run(self: *App) !void {
+    // Check for a terminal before publishing an instance.
+    _ = std.posix.tcgetattr(Term.in_fd) catch return error.NotATerminal;
+    self.server = try .init(self.gpa, self.root);
+    defer {
+        self.server.?.deinit();
+        self.server = null;
+    }
     try self.term.enter();
     defer self.term.leave();
 
@@ -293,6 +305,13 @@ pub fn run(self: *App) !void {
 
     while (!self.quitting) try self.tick();
     try self.shutdown();
+}
+
+pub fn agentResponse(self: *App, bytes: []const u8) ![]u8 {
+    self.reapChildren();
+    const response = try Agent.respond(self.gpa, self.root, self.entries, bytes, self.nowMs());
+    self.needs_paint = true;
+    return response;
 }
 
 fn tick(self: *App) !void {
@@ -313,8 +332,15 @@ fn tick(self: *App) !void {
         }
     }
 
+    const ipc_start = fds.items.len;
+    if (self.server) |*server| try server.appendPoll(&fds);
+
     const now = self.nowMs();
-    _ = std.posix.poll(fds.items, self.timeout(now)) catch |err| switch (err) {
+    const poll_timeout = if (self.server.?.active()) bounded: {
+        const timeout_ms = self.timeout(now);
+        break :bounded if (timeout_ms < 0) 100 else @min(timeout_ms, 100);
+    } else self.timeout(now);
+    _ = std.posix.poll(fds.items, poll_timeout) catch |err| switch (err) {
         error.SystemResources => return,
         else => return err,
     };
@@ -322,7 +348,7 @@ fn tick(self: *App) !void {
     if (fds.items[0].revents != 0) try self.readInput();
     if (fds.items[1].revents != 0) try self.readSignals();
 
-    for (fds.items[2..], sources.items) |fd, t| {
+    for (fds.items[2..ipc_start], sources.items) |fd, t| {
         if (fd.revents == 0) continue;
         if (t.drain()) {
             // Only a repaint of what is on screen is worth scheduling; other
@@ -333,6 +359,9 @@ fn tick(self: *App) !void {
         }
     }
 
+    if (!self.quitting) {
+        if (self.server) |*server| try server.service(fds.items[ipc_start..], self, self.nowMs());
+    }
     self.enforceDeadlines();
     try self.maybePaint();
 }
@@ -342,7 +371,7 @@ fn tick(self: *App) !void {
 fn timeout(self: *App, now: i64) i32 {
     var deadline: ?i64 = null;
 
-    if (self.needs_paint) {
+    if (self.needs_paint and !self.dumping) {
         deadline = self.last_paint_ms + frame_ms;
     }
     for (self.entries) |e| {
@@ -416,6 +445,16 @@ fn readInput(self: *App) !void {
     const n = std.c.read(Term.in_fd, &buf, buf.len);
     if (n <= 0) return;
     const data = buf[0..@intCast(n)];
+    if (self.dumping) {
+        if (std.mem.indexOfAny(u8, data, "\r\n") != null) {
+            try self.term.enter();
+            self.dumping = false;
+            self.grid.damaged = true;
+            self.needs_paint = true;
+            self.last_paint_ms = 0;
+        }
+        return;
+    }
 
     // Escape sequences can straddle reads, so anything left over from last
     // time goes first.
@@ -729,6 +768,7 @@ fn restartSelected(self: *App, now: i64) void {
 // --- painting ------------------------------------------------------------
 
 fn maybePaint(self: *App) !void {
+    if (self.dumping) return;
     if (!self.needs_paint) return;
     const now = self.nowMs();
     if (now - self.last_paint_ms < frame_ms) return;
@@ -1041,12 +1081,7 @@ fn dumpToHost(self: *App) !void {
     const t = self.currentTask() orelse return;
 
     self.term.leave();
-    defer {
-        self.term.enter() catch {};
-        self.grid.damaged = true;
-        self.needs_paint = true;
-        self.last_paint_ms = 0;
-    }
+    self.dumping = true;
 
     var buf: [64 * 1024]u8 = undefined;
     var writer = std.Io.File.stdout().writer(self.io, &buf);
@@ -1057,14 +1092,9 @@ fn dumpToHost(self: *App) !void {
     w.writeAll("\n\x1b[2m── press enter to return to corral ──\x1b[0m\n") catch {};
     w.flush() catch {};
 
-    // Read until Enter. The terminal is out of raw mode, so this is the
-    // host's own line editing doing the waiting.
-    var line: [64]u8 = undefined;
-    while (true) {
-        const n = std.c.read(Term.in_fd, &line, line.len);
-        if (n <= 0) break;
-        if (std.mem.indexOfAny(u8, line[0..@intCast(n)], "\r\n") != null) break;
-    }
+    // Return to the event loop while the human reads. Cooked stdin becomes
+    // readable on Enter; readInput then restores the TUI. Tasks and agent
+    // requests keep running while the host owns the screen.
 }
 
 // --- shutdown ------------------------------------------------------------

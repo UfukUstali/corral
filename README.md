@@ -38,6 +38,7 @@ compiles its terminal emulator from source. Later builds are incremental.
 
 ```sh
 zig build test               # unit tests
+zig build integration-test   # TUI + agent CLI tests, needs Python 3
 zig build run                # debug build, straight from source
 ```
 
@@ -104,6 +105,66 @@ request gets five seconds, then `SIGKILL`.
 
 `corral -c <path>` opens one config directly. It still appears in the list,
 so `h` gets you back to whatever else is around.
+
+## Agent commands
+
+`corral` opens the human TUI. `corral agent` makes one request to that running
+instance and exits, without needing a terminal. Run both from the same
+working directory. Corral uses its canonical absolute path and the current
+user to identify the instance, so symlink aliases connect to the same one.
+A nested directory selects a different instance; there is no ancestor search.
+`-c` chooses the TUI's initial config without changing its instance directory.
+Only one TUI can run per directory and user.
+
+```sh
+corral agent list
+corral agent list --name web --state running
+corral agent list --config services/api --status exit
+corral agent show web --config services/web
+corral agent start web --config services/web
+corral agent stop web --config services/web
+corral agent restart web --config services/web
+corral agent logs web --config services/web --lines 100
+```
+
+Every command prints one JSON object with `ok`. Lists include `root`, `tasks`,
+and `config_errors` for configs the TUI could not load. Other commands return
+`root` and `task`; logs also return plain text in `text`. Tasks include an opaque
+`id`, name, absolute config path, cwd, shell, state, status, PID, exit code,
+signal, and `restart_pending`. Pass the returned ID as the target to address
+any task exactly. Names must match exactly and be unique within `--config`
+when supplied. An ambiguous name fails before changing any task.
+
+List filters combine with AND. `--name` matches a case-sensitive substring;
+`--config` selects an exact directory or config file, relative to the instance
+root or absolute. `--state` accepts `stopped`, `running`, or `stopping`.
+`--status` matches the TUI's finer statuses: `idle`, `running`, `stopping`,
+`stopped`, `done`, `exit`, `killed`, or `failed`.
+
+Controls use the same lifecycle as the TUI keys, including the configured stop
+method and five-second grace period. Start is a no-op for a running task.
+Stop also cancels a pending restart. Stop and restart return immediately;
+use `show` to check completion. A successful start reports a spawned process,
+not application readiness. Logs return the last 100 logical lines by default,
+with `--lines` accepting 1 through 10000. They are a snapshot of the retained
+terminal scrollback, shared with the human, and may include previous runs.
+Screen-clearing programs and the scrollback limit affect what remains.
+
+Errors have `ok: false` and `error.code` / `error.message`. Exit status is 0
+for success, 1 for instance or task errors, and 2 for invalid CLI arguments.
+If no instance is running, `instance_not_running` tells the agent to ask the
+human to run `corral` in that directory and wait. Agent mode never starts an
+instance or falls back to launching task commands. Requests time out after
+five seconds; a failed connection after sending a control request can leave
+its outcome unknown, so check state before retrying.
+
+The socket is local, accessible only to its user, and removed on normal exit.
+A directory lock prevents duplicate TUIs; a later human launch replaces a
+stale socket left by a crash. Closing the TUI ends agent access.
+
+The minimal [Corral skill](skills/corral/SKILL.md) can be copied into your
+agent's skills directory as `corral/SKILL.md`. Builds also install it under
+`share/corral/skills/corral/SKILL.md`.
 
 ## Keys
 
@@ -173,6 +234,8 @@ selection, search and hyperlink handling apply to it. Press enter to return.
 | `src/Grid.zig` | a double-buffered cell grid that diffs frames into escape sequences |
 | `src/input.zig` | key decoding for the list, and mouse reports |
 | `src/App.zig` | layout, the event loop, the two-level list |
+| `src/Agent.zig` | one-shot agent commands, task queries and JSON responses |
+| `src/Ipc.zig` | directory-scoped socket, instance lock, nonblocking clients |
 
 Terminal emulation is [libghostty-vt][ghostty], used as a Zig module. It is
 the emulator out of [Ghostty][], so a task's output is parsed by the same

@@ -24,6 +24,11 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
     b.installArtifact(exe);
+    b.installDirectory(.{
+        .source_dir = b.path("skills/corral"),
+        .install_dir = .prefix,
+        .install_subdir = "share/corral/skills/corral",
+    });
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -35,4 +40,10 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    const integration = b.addSystemCommand(&.{"python3"});
+    integration.addFileArg(b.path("tests/agent_cli.py"));
+    integration.addArtifactArg(exe);
+    const integration_step = b.step("integration-test", "Test agent commands against a real TUI (needs Python 3)");
+    integration_step.dependOn(&integration.step);
 }

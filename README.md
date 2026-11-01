@@ -10,7 +10,7 @@ watch each, stop and restart them individually.
  ● api          2/3 │ 12:04:32 INFO  reverse proxy on :8443
  ● services/web 1/2 │ ➜  Local:   http://localhost:5173/
  ! tools     broken │
- j/k move  l enter  s start  S start all  q quit
+ j/k move  l enter  S start all  q quit
 ```
 
 The side panel is one flat list at a time. At the top it lists every
@@ -19,8 +19,9 @@ list becomes that config's tasks; `h` steps back out. That is the whole
 navigation model — there is no tree to expand and nothing is ever more than
 two `h` presses from anywhere else.
 
-**Nothing starts on its own.** `s` starts the selected task, `S` starts
-everything in the selected config. Discovery finding twenty projects should
+**Nothing starts on its own.** `S` starts everything in the selected config
+(or in the config you are in); `s` starts the selected task once you have
+stepped into a config. Discovery finding twenty projects should
 not mean twenty dev servers.
 
 ## Building
@@ -99,7 +100,7 @@ comment there describes.
 | `cwd` | working directory, resolved against the config's directory. Defaults to it. |
 | `env` | extra environment variables |
 | `stop` | `"SIGINT"` / `"SIGTERM"` / `"SIGKILL"`, or `{"send-keys": ["<C-c>"]}` |
-| `autostart` | `false` excludes the task from `S`. Nothing autostarts either way. |
+| `default` | `false` excludes the task from `S`. Nothing starts on its own either way. |
 
 Tasks appear in the order the file lists them. A task that ignores its stop
 request gets five seconds, then `SIGKILL`.

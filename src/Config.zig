@@ -28,7 +28,7 @@ pub const Task = struct {
     /// NUL-terminated because these go straight into `execve`.
     env: []const [2][:0]const u8,
     /// Whether "start everything here" includes this task. Corral never
-    /// starts anything on its own, so `autostart: false` means "only when
+    /// starts anything on its own, so `default: false` means "only when
     /// asked for by name" rather than "not at launch".
     in_start_all: bool,
     stop: Stop,
@@ -216,10 +216,10 @@ fn parseTask(
         }
     }
 
-    const in_start_all = switch (obj.get("autostart") orelse std.json.Value{ .bool = true }) {
+    const in_start_all = switch (obj.get("default") orelse std.json.Value{ .bool = true }) {
         .bool => |b| b,
         else => {
-            diag.set("task \"{s}\": \"autostart\" must be a boolean", .{name});
+            diag.set("task \"{s}\": \"default\" must be a boolean", .{name});
             return error.Invalid;
         },
     };
@@ -414,9 +414,9 @@ test "env is nul terminated" {
     try testing.expectEqualStrings("8080", env[1][1]);
 }
 
-test "autostart only scopes start-all" {
+test "default only scopes start-all" {
     var cfg = try parseTest(
-        \\{"tasks": {"a": {"shell": "x"}, "b": {"shell": "x", "autostart": false}}}
+        \\{"tasks": {"a": {"shell": "x"}, "b": {"shell": "x", "default": false}}}
     );
     defer cfg.deinit();
 

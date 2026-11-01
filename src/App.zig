@@ -222,6 +222,13 @@ fn currentTask(self: *App) ?*Task {
     return e.tasks[e.sel];
 }
 
+/// The task keys act on. On the config list the output pane previews a
+/// task, but keys there are about configs, so nothing is selected.
+fn selectedTask(self: *App) ?*Task {
+    if (self.level != .tasks) return null;
+    return self.currentTask();
+}
+
 /// Rows above the footer.
 fn listRows(self: *App) u16 {
     return self.term.rows -| 1;
@@ -711,13 +718,13 @@ fn visibleListRows(self: *App) usize {
 }
 
 fn scroll(self: *App, lines: isize) void {
-    const t = self.currentTask() orelse return;
+    const t = self.selectedTask() orelse return;
     t.scroll(-lines);
     self.needs_paint = true;
 }
 
 fn moveViewport(self: *App, where: enum { top, bottom }) void {
-    const t = self.currentTask() orelse return;
+    const t = self.selectedTask() orelse return;
     switch (where) {
         .top => t.scrollToTop(),
         .bottom => t.scrollToBottom(),
@@ -727,15 +734,13 @@ fn moveViewport(self: *App, where: enum { top, bottom }) void {
 
 // --- task commands -------------------------------------------------------
 
-/// From the config list too: `s` starts that config's selected task without
-/// making you step in first.
 fn startSelected(self: *App) void {
-    if (self.currentTask()) |t| t.start();
+    if (self.selectedTask()) |t| t.start();
     self.needs_paint = true;
 }
 
 /// Bring up everything in the selected config. This is the "one command
-/// starts my dev environment" key; `autostart: false` opts a task out.
+/// starts my dev environment" key; `default: false` opts a task out.
 fn startAll(self: *App) void {
     const e = self.current() orelse return;
     for (e.tasks) |t| {
@@ -745,17 +750,17 @@ fn startAll(self: *App) void {
 }
 
 fn stopSelected(self: *App, now: i64) void {
-    if (self.currentTask()) |t| t.stop(now);
+    if (self.selectedTask()) |t| t.stop(now);
     self.needs_paint = true;
 }
 
 fn killSelected(self: *App) void {
-    if (self.currentTask()) |t| t.kill();
+    if (self.selectedTask()) |t| t.kill();
     self.needs_paint = true;
 }
 
 fn restartSelected(self: *App, now: i64) void {
-    if (self.currentTask()) |t| t.restart(now);
+    if (self.selectedTask()) |t| t.restart(now);
     self.needs_paint = true;
 }
 
@@ -1017,7 +1022,7 @@ fn drawFooter(self: *App) void {
     const hint = if (self.focused)
         " ^a back to the list — keys go to the task, wheel scrolls, shift-drag selects"
     else switch (self.level) {
-        .configs => " j/k move  l enter  s start  S start all  q quit",
+        .configs => " j/k move  l enter  S start all  q quit",
         .tasks => " j/k move  h back  l focus  s/x/r start stop restart  S all  w dump  z zoom  q quit",
     };
     _ = self.grid.text(0, y, hint, self.term.cols, dim);
@@ -1041,7 +1046,7 @@ fn drawFooter(self: *App) void {
 /// and screen clear in it, which scribbles over whatever else is in the
 /// host's scrollback.
 fn dumpToHost(self: *App) !void {
-    const t = self.currentTask() orelse return;
+    const t = self.selectedTask() orelse return;
 
     self.term.leave();
     self.dumping = true;

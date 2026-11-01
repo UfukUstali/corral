@@ -11,7 +11,6 @@ const std = @import("std");
 const c = @import("c.zig");
 
 const Allocator = std.mem.Allocator;
-const log = std.log.scoped(.pty);
 
 /// The controlling side. Non-blocking; owned by us.
 master: c.fd_t,
@@ -47,8 +46,8 @@ pub fn spawn(gpa: Allocator, opts: Options) Error!Pty {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const shell_z = try arena.dupeZ(u8, opts.shell);
-    const cwd_z = try arena.dupeZ(u8, opts.cwd);
+    const shell_z = try arena.dupeSentinel(u8, opts.shell, 0);
+    const cwd_z = try arena.dupeSentinel(u8, opts.cwd, 0);
 
     const argv_buf = try arena.allocSentinel(?[*:0]const u8, 3, null);
     argv_buf[0] = "sh";
@@ -107,7 +106,7 @@ pub fn spawn(gpa: Allocator, opts: Options) Error!Pty {
 
     // --- parent ---------------------------------------------------------
     _ = c.close(slave);
-    setNonBlocking(master);
+    _ = c.setNonBlocking(master);
 
     return .{ .master = master, .pid = pid };
 }
@@ -204,12 +203,6 @@ fn setSize(fd: c.fd_t, rows: u16, cols: u16) void {
         .ws_col = @max(cols, 1),
     };
     _ = c.ioctl(fd, c.TIOCSWINSZ, &ws);
-}
-
-fn setNonBlocking(fd: c.fd_t) void {
-    const flags = c.fcntl(fd, c.F_GETFL, @as(c_int, 0));
-    if (flags < 0) return;
-    _ = c.fcntl(fd, c.F_SETFL, flags | c.O_NONBLOCK);
 }
 
 test {

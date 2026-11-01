@@ -15,7 +15,6 @@ const Pty = @import("Pty.zig");
 const input = @import("input.zig");
 
 const Allocator = std.mem.Allocator;
-const log = std.log.scoped(.task);
 
 /// How long a task gets to honour its stop request before it is killed.
 pub const stop_grace_ms: i64 = 5000;
@@ -102,6 +101,7 @@ pub fn create(
     // colour) waits forever for an answer that never comes.
     self.stream.handler.effects.write_pty = &effectWritePty;
     self.stream.handler.effects.bell = &effectBell;
+    self.stream.handler.effects.device_attributes = &effectDeviceAttributes;
 
     return self;
 }
@@ -131,13 +131,19 @@ fn fromHandler(h: *ghostty.TerminalStream.Handler) *Task {
     return @fieldParentPtr("stream", stream);
 }
 
-fn effectWritePty(h: *ghostty.TerminalStream.Handler, data: [:0]const u8) void {
+fn effectWritePty(h: *ghostty.TerminalStream.Handler, data: []const u8) void {
     const self = fromHandler(h);
     if (self.pty) |*pty| pty.write(data);
 }
 
 fn effectBell(h: *ghostty.TerminalStream.Handler) void {
     fromHandler(h).bell = true;
+}
+
+/// Ghostty's defaults: a VT220 with colour. Programs that ask (`CSI c`) and
+/// get no answer stall until they give up.
+fn effectDeviceAttributes(_: *ghostty.TerminalStream.Handler) ghostty.device_attributes.Attributes {
+    return .{};
 }
 
 // --- lifecycle -----------------------------------------------------------
@@ -266,11 +272,10 @@ pub fn resize(self: *Task, cols: u16, rows: u16) void {
     self.cols = c;
     self.rows = r;
 
-    // Go through the handler rather than `Terminal.resize` so that programs
-    // using in-band size reports (mode 2048) are told about it.
-    self.stream.handler.resize(.{ .cols = c, .rows = r }) catch |err| {
-        log.warn("resize failed for {s}: {t}", .{ self.name(), err });
-    };
+    // Through the handler rather than `Terminal.resize`: it also ends a
+    // synchronized-output hold. Failing here means out of memory, and the
+    // old size is still a working terminal.
+    self.stream.handler.resize(.{ .cols = c, .rows = r }) catch {};
     if (self.pty) |*pty| pty.resize(r, c);
     self.dirty = true;
 }

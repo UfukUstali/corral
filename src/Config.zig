@@ -200,9 +200,9 @@ fn parseTask(
         var it = map.iterator();
         while (it.next()) |entry| {
             const val = switch (entry.value_ptr.*) {
-                .string => |s| try arena.dupeZ(u8, s),
+                .string => |s| try arena.dupeSentinel(u8, s, 0),
                 .integer => |i| try std.fmt.allocPrintSentinel(arena, "{d}", .{i}, 0),
-                .bool => |b| try arena.dupeZ(u8, if (b) "true" else "false"),
+                .bool => |b| try arena.dupeSentinel(u8, if (b) "true" else "false", 0),
                 .null => continue,
                 else => {
                     diag.set(
@@ -212,7 +212,7 @@ fn parseTask(
                     return error.Invalid;
                 },
             };
-            try env.append(arena, .{ try arena.dupeZ(u8, entry.key_ptr.*), val });
+            try env.append(arena, .{ try arena.dupeSentinel(u8, entry.key_ptr.*, 0), val });
         }
     }
 

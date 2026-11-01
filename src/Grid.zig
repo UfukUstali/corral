@@ -21,55 +21,13 @@ const Allocator = std.mem.Allocator;
 /// anyway.
 pub const text_max = 16;
 
-pub const Rgb = struct { r: u8, g: u8, b: u8 };
-
-pub const Color = union(enum) {
-    /// The host terminal's own default. Emitted as SGR 39/49 so the user's
-    /// theme keeps deciding what it looks like.
-    default,
-    palette: u8,
-    rgb: Rgb,
-
-    pub fn eql(a: Color, b: Color) bool {
-        return switch (a) {
-            .default => b == .default,
-            .palette => |p| b == .palette and b.palette == p,
-            .rgb => |v| b == .rgb and
-                b.rgb.r == v.r and b.rgb.g == v.g and b.rgb.b == v.b,
-        };
-    }
-};
-
-pub const Underline = enum(u3) { none, single, double, curly, dotted, dashed };
-
-pub const Attrs = packed struct(u16) {
-    bold: bool = false,
-    dim: bool = false,
-    italic: bool = false,
-    blink: bool = false,
-    inverse: bool = false,
-    invisible: bool = false,
-    strikethrough: bool = false,
-    overline: bool = false,
-    underline: Underline = .none,
-    _pad: u5 = 0,
-};
-
-pub const Style = struct {
-    fg: Color = .default,
-    bg: Color = .default,
-    underline_color: Color = .default,
-    attrs: Attrs = .{},
-
-    pub fn eql(a: Style, b: Style) bool {
-        return @as(u16, @bitCast(a.attrs)) == @as(u16, @bitCast(b.attrs)) and
-            a.fg.eql(b.fg) and a.bg.eql(b.bg) and
-            a.underline_color.eql(b.underline_color);
-    }
-};
+/// Ghostty's own cell style, so a task's cells copy across unchanged. A
+/// colour of `.none` is the host terminal's default, emitted as SGR 39/49
+/// so the user's theme keeps deciding what it looks like.
+pub const Style = ghostty.Style;
 
 pub const Cell = struct {
-    text: [text_max]u8 = [_]u8{' '} ++ [_]u8{0} ** (text_max - 1),
+    text: [text_max]u8 = .{' '} ++ @as([text_max - 1]u8, @splat(0)),
     len: u8 = 1,
     /// Columns this cell occupies. Zero marks the second half of a wide
     /// glyph: it is never emitted, only skipped over.
@@ -293,9 +251,9 @@ fn writeStyle(gpa: Allocator, w: *std.ArrayList(u8), style: Style) Allocator.Err
     // around attributes that have no individual "off" code.
     try w.appendSlice(gpa, "\x1b[0");
 
-    const a = style.attrs;
+    const a = style.flags;
     if (a.bold) try w.appendSlice(gpa, ";1");
-    if (a.dim) try w.appendSlice(gpa, ";2");
+    if (a.faint) try w.appendSlice(gpa, ";2");
     if (a.italic) try w.appendSlice(gpa, ";3");
     switch (a.underline) {
         .none => {},
@@ -311,8 +269,8 @@ fn writeStyle(gpa: Allocator, w: *std.ArrayList(u8), style: Style) Allocator.Err
     if (a.strikethrough) try w.appendSlice(gpa, ";9");
     if (a.overline) try w.appendSlice(gpa, ";53");
 
-    try writeColor(gpa, w, style.fg, .fg);
-    try writeColor(gpa, w, style.bg, .bg);
+    try writeColor(gpa, w, style.fg_color, .fg);
+    try writeColor(gpa, w, style.bg_color, .bg);
     if (a.underline != .none) try writeColor(gpa, w, style.underline_color, .underline);
 
     try w.append(gpa, 'm');
@@ -323,14 +281,14 @@ const ColorRole = enum { fg, bg, underline };
 fn writeColor(
     gpa: Allocator,
     w: *std.ArrayList(u8),
-    color: Color,
+    color: Style.Color,
     role: ColorRole,
 ) Allocator.Error!void {
     switch (color) {
         // SGR 0 already put us back to the default, so there is nothing to
         // say. Passing the default through as 39/49 rather than a concrete
         // colour is the point: the user's own theme decides.
-        .default => {},
+        .none => {},
         .palette => |idx| switch (role) {
             // The 16 ANSI colours have short forms that terminals map onto
             // the user's palette, so prefer them over 38;5;n.
@@ -401,7 +359,7 @@ test "styles are emitted once per run" {
     defer g.deinit(testing.allocator);
 
     g.clear();
-    _ = g.text(0, 0, "abc", 20, .{ .fg = .{ .palette = 2 }, .attrs = .{ .bold = true } });
+    _ = g.text(0, 0, "abc", 20, .{ .fg_color = .{ .palette = 2 }, .flags = .{ .bold = true } });
     const frame = try g.flush(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, frame, "\x1b[0;1;32m"));
@@ -448,6 +406,6 @@ test "default colors are left to the host theme" {
     try testing.expectEqualStrings("\x1b[0m", buf.items);
 
     buf.clearRetainingCapacity();
-    try writeStyle(testing.allocator, &buf, .{ .fg = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } });
+    try writeStyle(testing.allocator, &buf, .{ .fg_color = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } });
     try testing.expectEqualStrings("\x1b[0;38;2;1;2;3m", buf.items);
 }

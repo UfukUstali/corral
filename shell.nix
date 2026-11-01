@@ -1,32 +1,31 @@
-# Dev shell for corral.
+# Dev shell for corral: zig 0.17, its language server, fish.
 #
-# Pinned on purpose: corral builds against ghostty's `main` branch, which
-# declares `.minimum_zig_version = "0.16.0"` and tracks Zig closely enough
-# that a floating channel would break the build on a whim.
-#
-#   nix-shell            # drops you in fish with zig 0.16 on PATH
+#   nix-shell            # drops you in fish with zig on PATH
 #   nix-shell --run 'zig build test'
 #
+# `nix develop` uses this same file. Run through `nix-shell`, nixpkgs comes
+# from flake.lock, so the two always agree on the zig they hand you.
 {
   pkgs ?
+    let
+      lock = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.nixpkgs.locked;
+    in
     import (fetchTarball {
-      # nixos-unstable, 2026-08-03
-      url = "https://github.com/NixOS/nixpkgs/archive/643809054d65fdd466a63e3155b8c498cb483c04.tar.gz";
-      sha256 = "0yb23r5k59xm5miqa2azwl2qgdwk324q1qwwcwgv198z25wchixx";
+      url = "https://github.com/NixOS/nixpkgs/archive/${lock.rev}.tar.gz";
+      sha256 = lock.narHash;
     }) { },
 }:
-
-assert pkgs.lib.assertMsg (pkgs.lib.versions.majorMinor pkgs.zig.version == "0.16")
-  "corral needs zig 0.16 (pinned nixpkgs has ${pkgs.zig.version})";
 
 pkgs.mkShell {
   name = "corral";
 
-  packages = with pkgs; [
-    zig # 0.16.0
-    zls # matching language server
-    fish
-    git # `zig fetch` shells out to it for some dependency kinds
+  packages = [
+    # Named exactly: ghostty 1.4 needs zig 0.17, and a nixpkgs without this
+    # attribute should fail here rather than hand you some other zig.
+    pkgs.zig_0_17
+    pkgs.zls
+    pkgs.fish
+    pkgs.git # `zig fetch` shells out to it for some dependency kinds
   ];
 
   shellHook = ''
@@ -35,9 +34,9 @@ pkgs.mkShell {
     # away and never leaks into other checkouts.
     export ZIG_GLOBAL_CACHE_DIR="$PWD/.zig-cache/global"
 
-    # Only hijack the shell when a human is driving. `nix-shell --run ...`
-    # and direnv both run this hook in a non-interactive bash, where exec'ing
-    # fish would swallow the command.
+    # Only hijack the shell when a human is driving. `nix-shell --run ...`,
+    # `nix develop -c ...` and direnv all run this hook non-interactively,
+    # where exec'ing fish would swallow the command.
     case $- in
       *i*)
         echo "corral · zig $(zig version) · fish"

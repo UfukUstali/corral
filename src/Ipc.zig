@@ -9,10 +9,6 @@ const max_response = 64 * 1024 * 1024;
 const timeout_ms = 5000;
 const max_clients = 16;
 
-pub fn nowMs(io: std.Io) i64 {
-    return @intCast(@divTrunc(std.Io.Clock.awake.now(io).nanoseconds, std.time.ns_per_ms));
-}
-
 fn socketPath(gpa: Allocator, root: []const u8) ![:0]u8 {
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(root, &hash, .{});
@@ -20,7 +16,7 @@ fn socketPath(gpa: Allocator, root: []const u8) ![:0]u8 {
 }
 
 fn checkDirectory(gpa: Allocator, path: []const u8, create: bool) !void {
-    const dir = try gpa.dupeZ(u8, std.fs.path.dirname(path).?);
+    const dir = try gpa.dupeSentinel(u8, std.fs.path.dirname(path).?, 0);
     defer gpa.free(dir);
     if (create and std.c.mkdir(dir, 0o700) != 0 and std.posix.errno(-1) != .EXIST)
         return error.InstanceDirectoryFailed;
@@ -50,11 +46,6 @@ fn address(path: []const u8) !std.c.sockaddr.un {
     return addr;
 }
 
-fn nonBlocking(fd: c.fd_t) !void {
-    const flags = c.fcntl(fd, std.c.F.GETFL, @as(c_int, 0));
-    if (flags < 0 or c.fcntl(fd, std.c.F.SETFL, flags | c.O_NONBLOCK) < 0) return error.SocketSetup;
-}
-
 fn newSocket() !c.fd_t {
     const fd = std.c.socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
     if (fd < 0) return error.SocketFailed;
@@ -65,7 +56,7 @@ fn newSocket() !c.fd_t {
 
 fn configure(fd: c.fd_t) !void {
     if (c.fcntl(fd, std.c.F.SETFD, @as(c_int, std.c.FD_CLOEXEC)) < 0) return error.SocketSetup;
-    try nonBlocking(fd);
+    if (!c.setNonBlocking(fd)) return error.SocketSetup;
 }
 
 const Client = struct {
@@ -194,7 +185,7 @@ pub const Server = struct {
 
 fn waitReady(fd: c.fd_t, events: i16, io: std.Io, deadline: i64) !void {
     while (true) {
-        const remaining = deadline - nowMs(io);
+        const remaining = deadline - c.nowMs(io);
         if (remaining <= 0) return error.InstanceTimeout;
         var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = events, .revents = 0 }};
         const n = try std.posix.poll(&fds, @intCast(remaining));
@@ -209,7 +200,7 @@ pub fn call(gpa: Allocator, io: std.Io, root: []const u8, req: Agent.Request) ![
     var addr = try address(path);
     const fd = try newSocket();
     defer _ = c.close(fd);
-    const deadline = nowMs(io) + timeout_ms;
+    const deadline = c.nowMs(io) + timeout_ms;
     if (std.c.connect(fd, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) != 0) {
         switch (std.posix.errno(-1)) {
             .NOENT, .CONNREFUSED => return error.InstanceNotRunning,

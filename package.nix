@@ -2,20 +2,20 @@
   lib,
   stdenv,
   stdenvNoCC,
-  # Named exactly, not `zig`: corral builds against ghostty's main branch, which
-  # tracks Zig closely enough that any other minor breaks the build in confusing
-  # ways. A nixpkgs without this attribute should fail, not substitute.
-  zig_0_16,
+  # Named exactly, not `zig`: ghostty 1.4 needs zig 0.17, and any other minor
+  # breaks the build in confusing ways. A nixpkgs without this attribute should
+  # fail, not substitute.
+  zig_0_17,
   gitMinimal,
   cacert,
 
   # Hash of the fetched zig dependency tree; see `deps` below for how to refresh
   # it after touching build.zig.zon.
-  depsHash ? "sha256-vIIo8Rpq6sSxXv3pX+tFRuhxbq9I3WfKkR/kfvWnr/Q=",
+  depsHash ? "sha256-ka8+7HVlK2XMk7LwH4c8C2IW70kP69xM5QGJBbfvHxA=",
 }:
 
 let
-  zig = zig_0_16;
+  zig = zig_0_17;
   version = "0.2.0";
 
   src = lib.fileset.toSource {
@@ -31,7 +31,7 @@ let
   };
 
   # Everything `zig build` would download: ghostty plus its transitive
-  # dependencies, ~110MB unpacked. Zig 0.16 keeps the downloaded tarballs in the
+  # dependencies, ~110MB unpacked. Zig keeps the downloaded tarballs in the
   # global cache but unpacks them into `zig-pkg/` next to build.zig, and skips
   # the network entirely when a package is already unpacked there. So this
   # derivation captures `zig-pkg/` rather than the cache: its contents are the
@@ -60,7 +60,7 @@ let
       runHook preBuild
 
       export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
-      # zig 0.16 assumes this exists instead of creating it.
+      # zig assumes this exists instead of creating it.
       mkdir -p "$ZIG_GLOBAL_CACHE_DIR/tmp"
 
       # `=all` rather than the default: ghostty's build.zig only asks for most of

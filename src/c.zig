@@ -32,6 +32,17 @@ pub extern "c" fn fcntl(fd: fd_t, cmd: c_int, ...) c_int;
 
 pub const WNOHANG = 1;
 
+/// Best effort: a descriptor left blocking only makes one read wait.
+pub fn setNonBlocking(fd: fd_t) bool {
+    const flags = fcntl(fd, F_GETFL, @as(c_int, 0));
+    return flags >= 0 and fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0;
+}
+
+/// Monotonic milliseconds, for deadlines.
+pub fn nowMs(io: std.Io) i64 {
+    return @intCast(@divTrunc(std.Io.Clock.awake.now(io).nanoseconds, std.time.ns_per_ms));
+}
+
 pub const F_GETFL = 3;
 pub const F_SETFL = 4;
 pub const O_NONBLOCK = switch (@import("builtin").target.os.tag) {

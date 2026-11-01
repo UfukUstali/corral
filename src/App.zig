@@ -9,7 +9,6 @@
 const App = @This();
 
 const std = @import("std");
-const ghostty = @import("ghostty-vt");
 
 const Config = @import("Config.zig");
 const Grid = @import("Grid.zig");
@@ -22,7 +21,6 @@ const Agent = @import("Agent.zig");
 const Ipc = @import("Ipc.zig");
 
 const Allocator = std.mem.Allocator;
-const log = std.log.scoped(.app);
 
 /// Frame budget. Output arriving faster than this coalesces into one repaint
 /// instead of one per read, which is what keeps a noisy task from turning
@@ -224,7 +222,7 @@ fn currentTask(self: *App) ?*Task {
     return e.tasks[e.sel];
 }
 
-/// How many rows the list occupies, and how many of them are tasks.
+/// Rows above the footer.
 fn listRows(self: *App) u16 {
     return self.term.rows -| 1;
 }
@@ -434,8 +432,7 @@ fn taskForPid(self: *App, pid: c.pid_t) ?*Task {
 }
 
 fn nowMs(self: *App) i64 {
-    const ts = std.Io.Clock.awake.now(self.io);
-    return @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_ms));
+    return c.nowMs(self.io);
 }
 
 // --- input ---------------------------------------------------------------
@@ -730,13 +727,10 @@ fn moveViewport(self: *App, where: enum { top, bottom }) void {
 
 // --- task commands -------------------------------------------------------
 
+/// From the config list too: `s` starts that config's selected task without
+/// making you step in first.
 fn startSelected(self: *App) void {
-    switch (self.level) {
-        .tasks => if (self.currentTask()) |t| t.start(),
-        // From the config list, `s` starts the config's currently selected
-        // task without making you step in first.
-        .configs => if (self.currentTask()) |t| t.start(),
-    }
+    if (self.currentTask()) |t| t.start();
     self.needs_paint = true;
 }
 
@@ -795,10 +789,10 @@ fn paint(self: *App) !void {
     self.term.writeAll(frame);
 }
 
-const dim: Grid.Style = .{ .fg = .{ .palette = 8 } };
-const green: Grid.Style = .{ .fg = .{ .palette = 2 } };
-const yellow: Grid.Style = .{ .fg = .{ .palette = 3 } };
-const red: Grid.Style = .{ .fg = .{ .palette = 1 } };
+const dim: Grid.Style = .{ .fg_color = .{ .palette = 8 } };
+const green: Grid.Style = .{ .fg_color = .{ .palette = 2 } };
+const yellow: Grid.Style = .{ .fg_color = .{ .palette = 3 } };
+const red: Grid.Style = .{ .fg_color = .{ .palette = 1 } };
 
 fn dotStyle(state: Task.State, failed: bool) Grid.Style {
     return switch (state) {
@@ -825,12 +819,12 @@ fn drawConfigList(self: *App) void {
         const selected = i == self.sel;
 
         var style: Grid.Style = .{};
-        if (selected) style.attrs.inverse = true;
+        if (selected) style.flags.inverse = true;
         self.grid.fill(0, y, self.panel_w, style);
 
         if (e.err.len > 0) {
             var s = red;
-            s.attrs.inverse = selected;
+            s.flags.inverse = selected;
             _ = self.grid.text(1, y, "!", 1, s);
         } else {
             const running = e.running();
@@ -838,12 +832,12 @@ fn drawConfigList(self: *App) void {
                 if (running > 0) .running else .stopped,
                 e.anyFailed(),
             );
-            s.attrs.inverse = selected;
+            s.flags.inverse = selected;
             _ = self.grid.text(1, y, if (running > 0) "●" else "○", 1, s);
 
             if (e.anyBell()) {
                 var b = yellow;
-                b.attrs.inverse = selected;
+                b.flags.inverse = selected;
                 _ = self.grid.text(2, y, "!", 1, b);
             }
         }
@@ -863,7 +857,7 @@ fn drawConfigList(self: *App) void {
 
         if (count_w > 0) {
             var s = if (e.err.len > 0) red else dim;
-            s.attrs.inverse = selected;
+            s.flags.inverse = selected;
             _ = self.grid.text(self.panel_w -| (count_w + 1), y, count, count_w, s);
         }
     }
@@ -886,16 +880,16 @@ fn drawTaskList(self: *App) void {
         const selected = i == e.sel;
 
         var style: Grid.Style = .{};
-        if (selected) style.attrs.inverse = true;
+        if (selected) style.flags.inverse = true;
         self.grid.fill(0, y, self.panel_w, style);
 
         var dot = dotStyle(t.state, t.failed());
-        dot.attrs.inverse = selected;
+        dot.flags.inverse = selected;
         _ = self.grid.text(1, y, if (t.state == .stopped) "○" else "●", 1, dot);
 
         if (t.bell) {
             var s = yellow;
-            s.attrs.inverse = selected;
+            s.flags.inverse = selected;
             _ = self.grid.text(2, y, "!", 1, s);
         }
 
@@ -911,7 +905,7 @@ fn drawTaskList(self: *App) void {
         _ = self.grid.textEllipsis(3, y, t.name(), name_room, style);
 
         var s = if (t.failed()) red else if (selected) style else dim;
-        s.attrs.inverse = selected;
+        s.flags.inverse = selected;
         _ = self.grid.text(self.panel_w -| (status_w + 1), y, status, status_w, s);
     }
 }
@@ -958,30 +952,7 @@ fn blit(self: *App, t: *Task) void {
             // The second half of a wide glyph is covered by the first.
             if (raw.wide == .spacer_tail) continue;
 
-            const style: ghostty.Style = if (raw.style_id == 0) .{} else styles[col];
-            var out: Grid.Style = .{
-                .fg = convertColor(style.fg_color),
-                .bg = convertColor(style.bg_color),
-                .underline_color = convertColor(style.underline_color),
-                .attrs = .{
-                    .bold = style.flags.bold,
-                    .dim = style.flags.faint,
-                    .italic = style.flags.italic,
-                    .blink = style.flags.blink,
-                    .inverse = style.flags.inverse,
-                    .invisible = style.flags.invisible,
-                    .strikethrough = style.flags.strikethrough,
-                    .overline = style.flags.overline,
-                    .underline = switch (style.flags.underline) {
-                        .none => .none,
-                        .single => .single,
-                        .double => .double,
-                        .curly => .curly,
-                        .dotted => .dotted,
-                        .dashed => .dashed,
-                    },
-                },
-            };
+            var style: Grid.Style = if (raw.style_id == 0) .{} else styles[col];
 
             var text_buf: [Grid.text_max]u8 = undefined;
             var text_len: usize = 0;
@@ -1000,23 +971,23 @@ fn blit(self: *App, t: *Task) void {
                 // A cell with no text but a background, which is how a run
                 // of coloured blanks is stored.
                 .bg_color_palette => {
-                    out.bg = .{ .palette = raw.content.color_palette.data };
+                    style.bg_color = .{ .palette = raw.content.color_palette.data };
                     text_buf[0] = ' ';
                     text_len = 1;
                     width = 1;
                 },
                 .bg_color_rgb => {
                     const rgb = raw.content.color_rgb;
-                    out.bg = .{ .rgb = .{ .r = rgb.r, .g = rgb.g, .b = rgb.b } };
+                    style.bg_color = .{ .rgb = .{ .r = rgb.r, .g = rgb.g, .b = rgb.b } };
                     text_buf[0] = ' ';
                     text_len = 1;
                     width = 1;
                 },
             }
 
-            self.grid.set(self.out_x + col, row, .fromSlice(text_buf[0..text_len], width, out));
+            self.grid.set(self.out_x + col, row, .fromSlice(text_buf[0..text_len], width, style));
             if (width == 2) {
-                self.grid.set(self.out_x + col + 1, row, .{ .width = 0, .style = out });
+                self.grid.set(self.out_x + col + 1, row, .{ .width = 0, .style = style });
             }
         }
     }
@@ -1037,14 +1008,6 @@ fn encode(buf: []u8, at: usize, cp: u21) usize {
     if (at + len > buf.len) return at;
     _ = std.unicode.utf8Encode(cp, buf[at..]) catch return at;
     return at + len;
-}
-
-fn convertColor(color: ghostty.Style.Color) Grid.Color {
-    return switch (color) {
-        .none => .default,
-        .palette => |idx| .{ .palette = idx },
-        .rgb => |v| .{ .rgb = .{ .r = v.r, .g = v.g, .b = v.b } },
-    };
 }
 
 fn drawFooter(self: *App) void {

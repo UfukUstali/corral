@@ -20,6 +20,19 @@ const usage =
     \\
 ;
 
+/// No logging at all. Logs go to stderr, which is the same screen the TUI is
+/// drawing on, and Ghostty logs every escape sequence it does not understand:
+/// a task printing one would scribble `info(terminal_dcs): .{ ... }` across
+/// the output pane.
+pub const std_options: std.Options = .{ .logFn = discardLog };
+
+fn discardLog(
+    comptime _: std.log.Level,
+    comptime _: @EnumLiteral(),
+    comptime _: []const u8,
+    _: anytype,
+) void {}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;

@@ -25,7 +25,8 @@ not mean twenty dev servers.
 
 ## Building
 
-Needs Zig 0.16. `shell.nix` pins one:
+Needs Zig 0.17, which Ghostty 1.4 requires. `shell.nix` provides it, from the
+nixpkgs pinned in `flake.lock`:
 
 ```sh
 nix-shell                    # drops you into fish with zig on PATH
@@ -33,7 +34,7 @@ zig build -Doptimize=ReleaseSafe
 ./zig-out/bin/corral
 ```
 
-The first build downloads [ghostty][] (~450MB unpacked into `zig-pkg/`) and
+The first build downloads [ghostty][] 1.4 (~450MB unpacked into `zig-pkg/`) and
 compiles its terminal emulator from source. Later builds are incremental.
 
 ```sh
@@ -45,7 +46,7 @@ zig build run                # debug build, straight from source
 ## Installing (nix)
 
 `flake.nix` builds against the installing machine's nixpkgs, taking zig from
-`pkgs.zig_0_16` specifically. A nixpkgs without that attribute is an error, not
+`pkgs.zig_0_17` specifically. A nixpkgs without that attribute is an error, not
 a reason to try some other zig.
 
 ```sh

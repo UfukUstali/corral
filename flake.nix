@@ -18,16 +18,16 @@
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      # corral builds against ghostty's main branch, which needs zig 0.16
-      # exactly. Rather than pinning a nixpkgs that has it, take zig from the
-      # nixpkgs doing the installing — and fail loudly rather than fall back to
-      # some other zig if that attribute ever goes away.
+      # Ghostty 1.4 needs zig 0.17 exactly. Rather than pinning a nixpkgs that
+      # has it, take zig from the nixpkgs doing the installing — and fail
+      # loudly rather than fall back to some other zig if that attribute ever
+      # goes away.
       corralFor =
         pkgs:
-        if pkgs ? zig_0_16 then
+        if pkgs ? zig_0_17 then
           pkgs.callPackage ./package.nix { }
         else
-          throw "corral needs pkgs.zig_0_16, which this nixpkgs (${pkgs.lib.version}) does not have.";
+          throw "corral needs pkgs.zig_0_17, which this nixpkgs (${pkgs.lib.version}) does not have.";
     in
     {
       packages = forAllSystems (pkgs: rec {
@@ -49,36 +49,9 @@
         default = corral;
       });
 
-      # `nix develop` — same tools shell.nix provides, which is still there for
-      # `nix-shell` users.
+      # `nix develop`. The same shell `nix-shell` gives you.
       devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShell {
-          name = "corral";
-
-          packages = [
-            pkgs.zig_0_16
-            pkgs.zls # matching language server
-            pkgs.fish
-            pkgs.git # `zig fetch` shells out to it for some dependency kinds
-          ];
-
-          shellHook = ''
-            # `zig build` downloads ghostty (and its vendored C deps) into the
-            # global cache. Keep it inside the project so a stale ghostty is one
-            # `rm -rf` away and never leaks into other checkouts.
-            export ZIG_GLOBAL_CACHE_DIR="$PWD/.zig-cache/global"
-
-            # Only hijack the shell when a human is driving. `nix develop -c ...`
-            # and direnv both run this hook non-interactively, where exec'ing
-            # fish would swallow the command.
-            case $- in
-              *i*)
-                echo "corral · zig $(zig version) · fish"
-                exec ${pkgs.fish}/bin/fish
-                ;;
-            esac
-          '';
-        };
+        default = import ./shell.nix { inherit pkgs; };
       });
 
       checks = forAllSystems (pkgs: {

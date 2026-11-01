@@ -9,7 +9,6 @@ const std = @import("std");
 const c = @import("c.zig");
 
 const posix = std.posix;
-const log = std.log.scoped(.term);
 
 pub const in_fd: c.fd_t = 0;
 pub const out_fd: c.fd_t = 1;
@@ -45,8 +44,8 @@ pub const Signal = enum(u8) {
 pub fn init() !Term {
     var fds: [2]c.fd_t = undefined;
     if (c.pipe(&fds) != 0) return error.PipeFailed;
-    setNonBlocking(fds[0]);
-    setNonBlocking(fds[1]);
+    _ = c.setNonBlocking(fds[0]);
+    _ = c.setNonBlocking(fds[1]);
     signal_pipe_w.store(fds[1], .release);
 
     var self: Term = .{ .sig_r = fds[0], .sig_w = fds[1] };
@@ -95,8 +94,8 @@ pub fn enter(self: *Term) !void {
     t.cflag.CSIZE = .CS8;
     // Blocking reads that return as soon as one byte lands. The event loop
     // only reads after `poll` says there is something, so this never waits.
-    t.cc[@intFromEnum(posix.V.MIN)] = 1;
-    t.cc[@intFromEnum(posix.V.TIME)] = 0;
+    t.cc[@backingInt(posix.V.MIN)] = 1;
+    t.cc[@backingInt(posix.V.TIME)] = 0;
 
     posix.tcsetattr(in_fd, .FLUSH, t) catch return error.NotATerminal;
     self.raw = true;
@@ -191,9 +190,9 @@ pub fn writeAll(self: *Term, bytes: []const u8) void {
 
 fn onSignal(sig: posix.SIG) callconv(.c) void {
     const bytes = [_]u8{switch (sig) {
-        .WINCH => @intFromEnum(Signal.winch),
-        .CHLD => @intFromEnum(Signal.child),
-        else => @intFromEnum(Signal.quit),
+        .WINCH => @backingInt(Signal.winch),
+        .CHLD => @backingInt(Signal.child),
+        else => @backingInt(Signal.quit),
     }};
     const fd = signal_pipe_w.load(.acquire);
     if (fd < 0) return;
@@ -233,19 +232,13 @@ pub fn drainSignals(self: *Term) Pending {
         const n = std.c.read(self.sig_r, &buf, buf.len);
         if (n <= 0) break;
         for (buf[0..@intCast(n)]) |byte| switch (byte) {
-            @intFromEnum(Signal.winch) => pending.winch = true,
-            @intFromEnum(Signal.child) => pending.child = true,
+            @backingInt(Signal.winch) => pending.winch = true,
+            @backingInt(Signal.child) => pending.child = true,
             else => pending.quit = true,
         };
         if (@as(usize, @intCast(n)) < buf.len) break;
     }
     return pending;
-}
-
-fn setNonBlocking(fd: c.fd_t) void {
-    const flags = c.fcntl(fd, c.F_GETFL, @as(c_int, 0));
-    if (flags < 0) return;
-    _ = c.fcntl(fd, c.F_SETFL, flags | c.O_NONBLOCK);
 }
 
 test {

@@ -103,6 +103,41 @@ pub const winsize = extern struct {
     ws_ypixel: c_ushort = 0,
 };
 
+// --- termios -------------------------------------------------------------
+
+// Zig 0.17's `std.c.termios` on Linux has the kernel's layout (44 bytes on
+// x86_64), but glibc's `tcgetattr` fills in glibc's own, larger struct (60
+// bytes). Going through `std.posix` therefore writes past the end of the
+// buffer and trips the stack protector. On Linux, ask the kernel directly,
+// whose layout the Zig type matches.
+
+pub fn tcgetattr(fd: fd_t) error{NotATerminal}!std.posix.termios {
+    if (@import("builtin").target.os.tag != .linux)
+        return std.posix.tcgetattr(fd) catch error.NotATerminal;
+    const linux = std.os.linux;
+    while (true) {
+        var t: std.posix.termios = undefined;
+        switch (linux.errno(linux.tcgetattr(fd, &t))) {
+            .SUCCESS => return t,
+            .INTR => continue,
+            else => return error.NotATerminal,
+        }
+    }
+}
+
+pub fn tcsetattr(fd: fd_t, action: std.posix.TCSA, t: std.posix.termios) error{NotATerminal}!void {
+    if (@import("builtin").target.os.tag != .linux)
+        return std.posix.tcsetattr(fd, action, t) catch error.NotATerminal;
+    const linux = std.os.linux;
+    while (true) {
+        switch (linux.errno(linux.tcsetattr(fd, action, &t))) {
+            .SUCCESS => return,
+            .INTR => continue,
+            else => return error.NotATerminal,
+        }
+    }
+}
+
 // `ptsname_r` is a glibc extension. macOS has no reentrant variant, so fall
 // back to the non-reentrant one there; corral only calls it from the single
 // thread that spawns tasks, so the shared buffer is not a hazard.

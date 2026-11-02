@@ -293,7 +293,7 @@ fn onResize(self: *App) !void {
 
 pub fn run(self: *App) !void {
     // Check for a terminal before publishing an instance.
-    _ = std.posix.tcgetattr(Term.in_fd) catch return error.NotATerminal;
+    _ = c.tcgetattr(Term.in_fd) catch return error.NotATerminal;
     self.server = try .init(self.gpa, self.root);
     defer {
         self.server.?.deinit();

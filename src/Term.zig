@@ -69,7 +69,7 @@ pub fn deinit(self: *Term) void {
 pub fn enter(self: *Term) !void {
     if (self.raw) return;
 
-    const original = posix.tcgetattr(in_fd) catch return error.NotATerminal;
+    const original = c.tcgetattr(in_fd) catch return error.NotATerminal;
     self.saved = original;
 
     var t = original;
@@ -97,7 +97,7 @@ pub fn enter(self: *Term) !void {
     t.cc[@backingInt(posix.V.MIN)] = 1;
     t.cc[@backingInt(posix.V.TIME)] = 0;
 
-    posix.tcsetattr(in_fd, .FLUSH, t) catch return error.NotATerminal;
+    c.tcsetattr(in_fd, .FLUSH, t) catch return error.NotATerminal;
     self.raw = true;
 
     self.writeAll(
@@ -152,7 +152,7 @@ pub fn leave(self: *Term) void {
     );
 
     if (self.saved) |original| {
-        posix.tcsetattr(in_fd, .FLUSH, original) catch {};
+        c.tcsetattr(in_fd, .FLUSH, original) catch {};
     }
 }
 

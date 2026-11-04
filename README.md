@@ -180,6 +180,7 @@ agent's skills directory as `corral/SKILL.md`. Builds also install it under
 | `x` / `X` / `r` | stop / force kill / restart |
 | `^u` `^d` `^e` `^y`, PgUp/PgDn, `g` / `G` | scroll output |
 | wheel | scroll the focused task's output, three lines a notch |
+| `c` | clear the task's output and scrollback |
 | `w` | dump the task's scrollback to the host terminal |
 | `z` | zoom (hide the panel) |
 | `q` | stop everything and quit |

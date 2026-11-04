@@ -310,6 +310,19 @@ pub fn scrollbackOffset(self: *Task) usize {
     return bottom -| bar.offset;
 }
 
+/// Throw away the scrollback and the visible screen, the way `clear` does.
+/// A running process keeps going and writes from the top left; its modes
+/// are left alone so a full screen program is not knocked out of them.
+pub fn clearLogs(self: *Task) void {
+    // Screen first: on a prompt, erasing the display pushes the screen into
+    // history instead, and the history erase below then takes that too.
+    self.terminal.eraseDisplay(.complete, false);
+    self.terminal.eraseDisplay(.scrollback, false);
+    self.terminal.setCursorPos(1, 1);
+    self.terminal.scrollViewport(.bottom);
+    self.dirty = true;
+}
+
 // --- mouse ---------------------------------------------------------------
 
 /// True when the program running here asked to be sent mouse events itself.

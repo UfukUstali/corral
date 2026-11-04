@@ -578,6 +578,7 @@ fn onKey(self: *App, key: input.Key) !void {
             'x' => self.stopSelected(now),
             'X' => self.killSelected(),
             'r' => self.restartSelected(now),
+            'c' => self.clearSelected(),
 
             'w' => try self.dumpToHost(),
             'z' => {
@@ -761,6 +762,11 @@ fn killSelected(self: *App) void {
 
 fn restartSelected(self: *App, now: i64) void {
     if (self.selectedTask()) |t| t.restart(now);
+    self.needs_paint = true;
+}
+
+fn clearSelected(self: *App) void {
+    if (self.selectedTask()) |t| t.clearLogs();
     self.needs_paint = true;
 }
 
@@ -1023,7 +1029,7 @@ fn drawFooter(self: *App) void {
         " ^a back to the list — keys go to the task, wheel scrolls, shift-drag selects"
     else switch (self.level) {
         .configs => " j/k move  l enter  S start all  q quit",
-        .tasks => " j/k move  h back  l focus  s/x/r start stop restart  S all  w dump  z zoom  q quit",
+        .tasks => " j/k move  h back  l focus  s/x/r start stop restart  c clear  S all  w dump  z zoom  q quit",
     };
     _ = self.grid.text(0, y, hint, self.term.cols, dim);
 

@@ -204,4 +204,56 @@ with tempfile.TemporaryDirectory(prefix="corral-agent-test-") as tmp:
         tui.close()
     assert not Path(path).exists()
 
+# Edits to a config apply live: changed tasks restart, removed ones stop, new ones appear stopped.
+with tempfile.TemporaryDirectory(prefix="corral-reload-test-") as tmp:
+    root = Path(tmp)
+    config = root / "corral.json"
+
+    def write(tasks):
+        # Replaced rather than rewritten, the way most editors save.
+        staged = root / "corral.json.tmp"
+        staged.write_text(json.dumps({"tasks": tasks}))
+        staged.rename(config)
+
+    def until(predicate):
+        deadline = time.monotonic() + 7
+        while not predicate():
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+
+    def gone(pid):
+        try:
+            os.kill(pid, 0)
+            return False
+        except ProcessLookupError:
+            return True
+
+    write({"keep": "exec sleep 60", "edit": "exec sleep 60", "drop": "exec sleep 60"})
+    tui = Tui(root)
+    try:
+        wait_ready(root)
+        pids = {name: call(root, "start", name)["task"]["pid"] for name in ("keep", "edit", "drop")}
+
+        write({"edit": "exec sleep 61", "keep": "exec sleep 60", "added": "exec sleep 60"})
+        edited = wait_for(root, "edit", lambda t: t["state"] == "running" and t["pid"] != pids["edit"])
+        assert [t["name"] for t in call(root, "list")["tasks"]] == ["edit", "keep", "added"]
+        assert call(root, "show", "keep")["task"]["pid"] == pids["keep"]
+        assert call(root, "show", "added")["task"]["status"] == "idle"
+        assert call(root, "show", "drop", ok=False)["error"]["code"] == "task_not_found"
+        until(lambda: gone(pids["drop"]))
+
+        # A config that stops parsing keeps its tasks, and says why.
+        config.write_text("{")
+        until(lambda: len(call(root, "list")["config_errors"]) == 1)
+        assert call(root, "show", "keep")["task"]["pid"] == pids["keep"]
+        assert call(root, "show", "edit")["task"]["pid"] == edited["pid"]
+
+        # Fixing it restarts nothing that did not change.
+        write({"edit": "exec sleep 61", "keep": "exec sleep 60", "added": "exec sleep 60"})
+        until(lambda: not call(root, "list")["config_errors"])
+        assert call(root, "show", "keep")["task"]["pid"] == pids["keep"]
+        assert call(root, "show", "edit")["task"]["pid"] == edited["pid"]
+    finally:
+        tui.close()
+
 print("Agent CLI integration tests passed")

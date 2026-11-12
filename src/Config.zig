@@ -337,6 +337,39 @@ pub fn deinit(self: *Config) void {
     self.* = undefined;
 }
 
+/// Copy a task definition into `arena`, so it can outlive the config it was
+/// parsed from. A task whose config is reloaded has to keep its definition
+/// until it has stopped.
+pub fn cloneTask(arena: Allocator, t: Task) Allocator.Error!Task {
+    const env = try arena.alloc([2][:0]const u8, t.env.len);
+    for (env, t.env) |*dst, src| {
+        dst.* = .{ try arena.dupeSentinel(u8, src[0], 0), try arena.dupeSentinel(u8, src[1], 0) };
+    }
+    return .{
+        .name = try arena.dupe(u8, t.name),
+        .shell = try arena.dupe(u8, t.shell),
+        .cwd = try arena.dupe(u8, t.cwd),
+        .env = env,
+        .in_start_all = t.in_start_all,
+        .stop = switch (t.stop) {
+            .keys => |k| .{ .keys = try arena.dupe(u8, k) },
+            .signal => |s| .{ .signal = s },
+        },
+    };
+}
+
+/// Whether two definitions would run the same process. `stop` and `default`
+/// only matter to corral, so changing them is no reason to restart anything.
+pub fn sameProcess(a: Task, b: Task) bool {
+    if (!std.mem.eql(u8, a.shell, b.shell)) return false;
+    if (!std.mem.eql(u8, a.cwd, b.cwd)) return false;
+    if (a.env.len != b.env.len) return false;
+    for (a.env, b.env) |x, y| {
+        if (!std.mem.eql(u8, x[0], y[0]) or !std.mem.eql(u8, x[1], y[1])) return false;
+    }
+    return true;
+}
+
 // --- tests ---------------------------------------------------------------
 
 const testing = std.testing;
@@ -422,6 +455,28 @@ test "default only scopes start-all" {
 
     try testing.expect(cfg.tasks[0].in_start_all);
     try testing.expect(!cfg.tasks[1].in_start_all);
+}
+
+test "a clone outlives its config and compares by process" {
+    var cfg = try parseTest(
+        \\{"tasks": {"a": {"shell": "x", "env": {"K": "v"}, "stop": {"send-keys": ["<C-c>"]}}}}
+    );
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const copy = try cloneTask(arena.allocator(), cfg.tasks[0]);
+    try testing.expect(sameProcess(copy, cfg.tasks[0]));
+    cfg.deinit();
+
+    try testing.expectEqualStrings("x", copy.shell);
+    try testing.expectEqualStrings("v", copy.env[0][1]);
+    try testing.expectEqualStrings("\x03", copy.stop.keys);
+
+    var other = try parseTest(
+        \\{"tasks": {"a": {"shell": "x", "env": {"K": "w"}}, "b": {"shell": "x", "env": {"K": "v"}, "default": false}}}
+    );
+    defer other.deinit();
+    try testing.expect(!sameProcess(copy, other.tasks[0]));
+    try testing.expect(sameProcess(copy, other.tasks[1]));
 }
 
 test "errors are explained, not thrown away" {

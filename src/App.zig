@@ -30,6 +30,11 @@ const frame_ms: i64 = 16;
 /// How long everything gets to shut down cleanly when quitting.
 const quit_grace_ms: i64 = 6000;
 
+/// How often the configs are checked for edits. A `stat` per config is
+/// cheap enough to do every second and works the same on every platform,
+/// which a file notification API would not.
+const watch_ms: i64 = 1000;
+
 const panel_min: u16 = 18;
 const panel_max: u16 = 44;
 
@@ -40,13 +45,15 @@ pub const Entry = struct {
     /// Directory relative to the scan root; "." for the root itself.
     display: []const u8,
     path: []const u8,
-    config: ?Config = null,
+    /// The file as it was when last read; null if it could not be stat'd.
+    stamp: ?Stamp = null,
     tasks: []*Task = &.{},
     /// Selection and scroll position *within* this config, remembered so
     /// stepping out and back in lands where you left.
     sel: usize = 0,
     top: usize = 0,
-    /// Why this config could not be loaded, if it could not be.
+    /// Why this config could not be loaded, if it could not be. A config
+    /// that breaks after loading keeps its tasks, running or not.
     err: []const u8 = "",
 
     fn running(self: *const Entry) usize {
@@ -73,6 +80,18 @@ pub const Entry = struct {
     }
 };
 
+/// Enough of a file's metadata to tell that it was written.
+const Stamp = struct {
+    inode: std.Io.File.INode,
+    size: u64,
+    mtime: i96,
+
+    fn of(io: std.Io, path: []const u8) ?Stamp {
+        const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch return null;
+        return .{ .inode = st.inode, .size = st.size, .mtime = st.mtime.nanoseconds };
+    }
+};
+
 gpa: Allocator,
 io: std.Io,
 term: Term,
@@ -82,6 +101,11 @@ grid: Grid = .{},
 root: []const u8,
 found: []discover.Found,
 entries: []Entry,
+/// Tasks deleted from their config while still running. They are stopped
+/// the way the config used to say, and dropped once they have exited.
+retired: std.ArrayList(*Task) = .empty,
+/// When the configs are next checked for edits.
+next_watch_ms: i64 = 0,
 
 level: Level = .configs,
 sel: usize = 0,
@@ -148,10 +172,11 @@ pub fn deinit(self: *App) void {
     for (self.entries) |*entry| {
         for (entry.tasks) |t| t.destroy();
         self.gpa.free(entry.tasks);
-        if (entry.config) |*cfg| cfg.deinit();
         if (entry.err.len > 0) self.gpa.free(entry.err);
     }
     self.gpa.free(self.entries);
+    for (self.retired.items) |t| t.destroy();
+    self.retired.deinit(self.gpa);
     self.grid.deinit(self.gpa);
     self.term.deinit();
 }
@@ -162,26 +187,100 @@ pub fn deinit(self: *App) void {
 /// than when you finally step into it.
 fn loadAll(self: *App) !void {
     for (self.entries) |*entry| {
-        var diag: Config.Diag = .{};
-        var cfg = Config.load(self.gpa, self.io, entry.path, &diag) catch {
-            entry.err = try self.gpa.dupe(u8, diag.msg);
-            continue;
-        };
-        errdefer cfg.deinit();
-
-        const tasks = try self.gpa.alloc(*Task, cfg.tasks.len);
-        errdefer self.gpa.free(tasks);
-
-        var made: usize = 0;
-        errdefer for (tasks[0..made]) |t| t.destroy();
-        for (cfg.tasks, 0..) |*task_cfg, i| {
-            tasks[i] = try .create(self.gpa, self.io, task_cfg, self.out_w, self.out_h);
-            made += 1;
-        }
-
-        entry.config = cfg;
-        entry.tasks = tasks;
+        entry.stamp = .of(self.io, entry.path);
+        try self.reload(entry);
     }
+    self.next_watch_ms = self.nowMs() + watch_ms;
+}
+
+/// Reload any config whose file changed since it was last read.
+fn watchConfigs(self: *App) !void {
+    var changed = false;
+    for (self.entries) |*entry| {
+        // Stat before reading, so a write that lands in between is seen
+        // again next time rather than missed.
+        const stamp: ?Stamp = .of(self.io, entry.path);
+        if (std.meta.eql(stamp, entry.stamp)) continue;
+        entry.stamp = stamp;
+        try self.reload(entry);
+        changed = true;
+    }
+    self.next_watch_ms = self.nowMs() + watch_ms;
+    // Task names may have changed, and with them the panel width.
+    if (changed) try self.onResize();
+}
+
+/// Read an entry's config again and bring its tasks in line with it.
+///
+/// Tasks are matched by name. One that is unchanged is left alone; one whose
+/// command, cwd or env changed is restarted if it was running; one that is
+/// new is added, stopped like everything else; one that is gone is stopped
+/// and dropped. A config that no longer parses changes nothing but its
+/// error: a typo halfway through an edit should not take a dev server down.
+fn reload(self: *App, entry: *Entry) !void {
+    var diag: Config.Diag = .{};
+    var cfg = Config.load(self.gpa, self.io, entry.path, &diag) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            const msg = try self.gpa.dupe(u8, diag.msg);
+            if (entry.err.len > 0) self.gpa.free(entry.err);
+            entry.err = msg;
+            self.needs_paint = true;
+            return;
+        },
+    };
+    defer cfg.deinit();
+
+    const now = self.nowMs();
+    const next = try self.gpa.alloc(*Task, cfg.tasks.len);
+    errdefer self.gpa.free(next);
+    var fresh: std.ArrayList(*Task) = .empty;
+    defer fresh.deinit(self.gpa);
+    errdefer for (fresh.items) |t| t.destroy();
+    // Reserved up front so retiring, the last step, cannot fail halfway.
+    try self.retired.ensureUnusedCapacity(self.gpa, entry.tasks.len);
+
+    for (cfg.tasks, next) |*def, *slot| {
+        slot.* = for (entry.tasks) |t| {
+            if (std.mem.eql(u8, t.name(), def.name)) break t;
+        } else made: {
+            const t: *Task = try .create(self.gpa, self.io, def, self.out_w, self.out_h);
+            try fresh.append(self.gpa, t);
+            break :made t;
+        };
+    }
+    // Redefined only once every new task exists: running out of memory
+    // creating one should not have restarted anything already.
+    for (cfg.tasks, next) |*def, t| {
+        if (std.mem.indexOfScalar(*Task, fresh.items, t) == null) try t.redefine(def, now);
+    }
+
+    const selected = if (entry.sel < entry.tasks.len) entry.tasks[entry.sel] else null;
+    for (entry.tasks) |t| {
+        if (std.mem.indexOfScalar(*Task, next, t) != null) continue;
+        if (t.state == .stopped) {
+            t.destroy();
+            continue;
+        }
+        t.restart_pending = false;
+        t.stop(now);
+        self.retired.appendAssumeCapacity(t);
+    }
+    self.gpa.free(entry.tasks);
+    entry.tasks = next;
+
+    if (entry.err.len > 0) self.gpa.free(entry.err);
+    entry.err = "";
+
+    // Stay on the same task, wherever the edit moved it.
+    const kept = if (selected) |t| std.mem.indexOfScalar(*Task, next, t) else null;
+    entry.sel = kept orelse @min(entry.sel, next.len - 1);
+    if (entry.top >= next.len) entry.top = 0;
+    if (self.current() == entry) {
+        if (kept == null and self.focused) self.setFocus(false);
+        self.scrollListIntoView();
+    }
+    self.needs_paint = true;
 }
 
 /// Ask to open straight inside one config, as `-c` and a directory with a
@@ -210,6 +309,49 @@ fn applyPendingEnter(self: *App) void {
 }
 
 // --- accessors -----------------------------------------------------------
+
+/// Every task with a process to look after: those in the configs, then the
+/// retired ones still on their way out.
+const AllTasks = struct {
+    app: *App,
+    entry: usize = 0,
+    task: usize = 0,
+    retired: usize = 0,
+
+    fn next(it: *AllTasks) ?*Task {
+        while (it.entry < it.app.entries.len) {
+            const tasks = it.app.entries[it.entry].tasks;
+            if (it.task < tasks.len) {
+                it.task += 1;
+                return tasks[it.task - 1];
+            }
+            it.entry += 1;
+            it.task = 0;
+        }
+        if (it.retired < it.app.retired.items.len) {
+            it.retired += 1;
+            return it.app.retired.items[it.retired - 1];
+        }
+        return null;
+    }
+};
+
+fn allTasks(self: *App) AllTasks {
+    return .{ .app = self };
+}
+
+/// Drop retired tasks whose process has exited. Done once per tick rather
+/// than on reaping, so no loop is ever holding a pointer to one.
+fn pruneRetired(self: *App) void {
+    var i: usize = 0;
+    while (i < self.retired.items.len) {
+        const t = self.retired.items[i];
+        if (t.state == .stopped) {
+            t.destroy();
+            _ = self.retired.swapRemove(i);
+        } else i += 1;
+    }
+}
 
 fn current(self: *App) ?*Entry {
     if (self.sel >= self.entries.len) return null;
@@ -282,9 +424,8 @@ fn layout(self: *App) void {
 fn onResize(self: *App) !void {
     self.layout();
     try self.grid.resize(self.gpa, self.term.cols, self.term.rows);
-    for (self.entries) |e| {
-        for (e.tasks) |t| t.resize(self.out_w, self.out_h);
-    }
+    var it = self.allTasks();
+    while (it.next()) |t| t.resize(self.out_w, self.out_h);
     self.grid.damaged = true;
     self.needs_paint = true;
 }
@@ -328,13 +469,12 @@ fn tick(self: *App) !void {
     try fds.append(self.gpa, .{ .fd = Term.in_fd, .events = std.posix.POLL.IN, .revents = 0 });
     try fds.append(self.gpa, .{ .fd = self.term.sig_r, .events = std.posix.POLL.IN, .revents = 0 });
 
-    for (self.entries) |e| {
-        for (e.tasks) |t| {
-            const pty = if (t.pty) |*p| p else continue;
-            if (t.eof) continue;
-            try fds.append(self.gpa, .{ .fd = pty.master, .events = std.posix.POLL.IN, .revents = 0 });
-            try sources.append(self.gpa, t);
-        }
+    var it = self.allTasks();
+    while (it.next()) |t| {
+        const pty = if (t.pty) |*p| p else continue;
+        if (t.eof) continue;
+        try fds.append(self.gpa, .{ .fd = pty.master, .events = std.posix.POLL.IN, .revents = 0 });
+        try sources.append(self.gpa, t);
     }
 
     const ipc_start = fds.items.len;
@@ -367,39 +507,39 @@ fn tick(self: *App) !void {
     if (!self.quitting) {
         if (self.server) |*server| try server.service(fds.items[ipc_start..], self, self.nowMs());
     }
+    if (!self.quitting and self.nowMs() >= self.next_watch_ms) try self.watchConfigs();
     self.enforceDeadlines();
+    self.pruneRetired();
     try self.maybePaint();
 }
 
 /// How long `poll` may sleep: until the next frame if something is waiting
-/// to be drawn, else until the next task has to be killed, else forever.
+/// to be drawn, the next task has to be killed, or the configs are due a
+/// look, whichever comes first.
 fn timeout(self: *App, now: i64) i32 {
-    var deadline: ?i64 = null;
-
+    var deadline: i64 = self.next_watch_ms;
     if (self.needs_paint and !self.dumping) {
-        deadline = self.last_paint_ms + frame_ms;
+        deadline = @min(deadline, self.last_paint_ms + frame_ms);
     }
-    for (self.entries) |e| {
-        for (e.tasks) |t| {
-            const at = t.kill_at orelse continue;
-            deadline = if (deadline) |d| @min(d, at) else at;
-        }
+    var it = self.allTasks();
+    while (it.next()) |t| {
+        const at = t.kill_at orelse continue;
+        deadline = @min(deadline, at);
     }
 
-    const at = deadline orelse return -1;
+    const at = deadline;
     return @intCast(std.math.clamp(at - now, 0, 60_000));
 }
 
 fn enforceDeadlines(self: *App) void {
     const now = self.nowMs();
-    for (self.entries) |e| {
-        for (e.tasks) |t| {
-            const at = t.kill_at orelse continue;
-            if (now < at) continue;
-            // It had its chance to stop politely.
-            t.kill();
-            t.kill_at = null;
-        }
+    var it = self.allTasks();
+    while (it.next()) |t| {
+        const at = t.kill_at orelse continue;
+        if (now < at) continue;
+        // It had its chance to stop politely.
+        t.kill();
+        t.kill_at = null;
     }
 }
 
@@ -429,11 +569,10 @@ fn reapChildren(self: *App) void {
 }
 
 fn taskForPid(self: *App, pid: c.pid_t) ?*Task {
-    for (self.entries) |e| {
-        for (e.tasks) |t| {
-            const pty = t.pty orelse continue;
-            if (pty.pid == pid) return t;
-        }
+    var it = self.allTasks();
+    while (it.next()) |t| {
+        const pty = t.pty orelse continue;
+        if (pty.pid == pid) return t;
     }
     return null;
 }
@@ -879,9 +1018,12 @@ fn drawTaskList(self: *App) void {
     const rows = self.listRows();
     if (rows == 0) return;
 
-    // Breadcrumb. `h` is the way back, and saying so costs one row.
-    _ = self.grid.text(1, 0, "‹", 1, dim);
-    _ = self.grid.textEllipsis(3, 0, e.display, self.panel_w -| 4, dim);
+    // Breadcrumb. `h` is the way back, and saying so costs one row. Red
+    // when the file has stopped parsing, since the error itself is only
+    // shown out on the config list.
+    const crumb = if (e.err.len > 0) red else dim;
+    _ = self.grid.text(1, 0, if (e.err.len > 0) "!" else "‹", 1, crumb);
+    _ = self.grid.textEllipsis(3, 0, e.display, self.panel_w -| 4, crumb);
 
     var y: u16 = 1;
     while (y < rows) : (y += 1) {
@@ -927,7 +1069,7 @@ fn drawOutput(self: *App) !void {
         return;
     };
 
-    if (e.err.len > 0) {
+    if (e.err.len > 0 and (self.level == .configs or e.tasks.len == 0)) {
         _ = self.grid.text(self.out_x + 2, 1, e.err, self.out_w -| 4, red);
         _ = self.grid.text(self.out_x + 2, 3, e.path, self.out_w -| 4, dim);
         return;
@@ -1077,11 +1219,10 @@ fn dumpToHost(self: *App) !void {
 /// leaving without this would leave them running with no way back to them.
 fn shutdown(self: *App) !void {
     const now = self.nowMs();
-    for (self.entries) |e| {
-        for (e.tasks) |t| {
-            t.restart_pending = false;
-            t.stop(now);
-        }
+    var it = self.allTasks();
+    while (it.next()) |t| {
+        t.restart_pending = false;
+        t.stop(now);
     }
 
     const deadline = now + quit_grace_ms;
@@ -1095,18 +1236,16 @@ fn shutdown(self: *App) !void {
         self.enforceDeadlines();
     }
 
-    for (self.entries) |e| {
-        for (e.tasks) |t| t.kill();
-    }
+    it = self.allTasks();
+    while (it.next()) |t| t.kill();
     // One last sweep so we do not leave zombies behind for init to adopt.
     self.reapChildren();
 }
 
 fn anyAlive(self: *App) bool {
-    for (self.entries) |e| {
-        for (e.tasks) |t| {
-            if (t.state != .stopped) return true;
-        }
+    var it = self.allTasks();
+    while (it.next()) |t| {
+        if (t.state != .stopped) return true;
     }
     return false;
 }

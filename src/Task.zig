@@ -36,7 +36,11 @@ pub const Exit = union(enum) {
 
 gpa: Allocator,
 io: std.Io,
-cfg: *const Config.Task,
+/// The task's own copy of its definition, in `cfg_arena`. Owning it lets a
+/// task outlive the config it came from: one deleted from its file still has
+/// to be stopped the way that file said to.
+cfg: Config.Task,
+cfg_arena: std.heap.ArenaAllocator,
 
 terminal: ghostty.Terminal,
 /// Kept for the life of the task rather than recreated per write: escape
@@ -79,10 +83,15 @@ pub fn create(
     const self = try gpa.create(Task);
     errdefer gpa.destroy(self);
 
+    var cfg_arena: std.heap.ArenaAllocator = .init(gpa);
+    errdefer cfg_arena.deinit();
+    const own = try Config.cloneTask(cfg_arena.allocator(), cfg.*);
+
     self.* = .{
         .gpa = gpa,
         .io = io,
-        .cfg = cfg,
+        .cfg = own,
+        .cfg_arena = cfg_arena,
         .terminal = try .init(io, gpa, .{
             .cols = @max(cols, 1),
             .rows = @max(rows, 1),
@@ -114,6 +123,7 @@ pub fn destroy(self: *Task) void {
     self.render.deinit(self.gpa);
     self.stream.deinit();
     self.terminal.deinit(self.gpa);
+    self.cfg_arena.deinit();
     const gpa = self.gpa;
     gpa.destroy(self);
 }
@@ -209,6 +219,21 @@ pub fn restart(self: *Task, now_ms: i64) void {
     // until the old one has actually let go of it.
     self.restart_pending = true;
     if (self.state == .running) self.stop(now_ms);
+}
+
+/// Adopt an edited definition. A running task whose process would differ is
+/// restarted onto it; the stop still goes out the old way, because that is
+/// what the running process was started expecting.
+pub fn redefine(self: *Task, cfg: *const Config.Task, now_ms: i64) Allocator.Error!void {
+    var arena: std.heap.ArenaAllocator = .init(self.gpa);
+    errdefer arena.deinit();
+    const own = try Config.cloneTask(arena.allocator(), cfg.*);
+
+    if (self.state == .running and !Config.sameProcess(self.cfg, own)) self.restart(now_ms);
+
+    self.cfg_arena.deinit();
+    self.cfg_arena = arena;
+    self.cfg = own;
 }
 
 /// Called by the event loop once `waitpid` has a status for our child.

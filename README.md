@@ -206,6 +206,17 @@ come from, and why a config with a typo in it says `broken` immediately
 rather than when you finally step into it. Parsing is all that happens; no
 process is started.
 
+Configs are re-read when they change, checked once a second. Tasks are
+matched by name: a running task whose `shell`, `cwd` or `env` changed is
+restarted onto the new definition (stopped the old way first), one that was
+removed is stopped and dropped, and a new one appears stopped like everything
+else. Changing only `stop` or `default` restarts nothing. A config that stops
+parsing — a deleted file, or a save halfway through an edit — keeps its
+tasks as they are and shows `broken` until it parses again.
+
+Only the configs found at startup are watched. A `corral.json` created
+later needs a restart of corral to show up.
+
 ## Two deliberate design choices
 
 **The mouse is left alone, until a task is focused.** With the list in front
@@ -236,7 +247,7 @@ selection, search and hyperlink handling apply to it. Press enter to return.
 | `src/Term.zig` | the host terminal: raw mode, alternate screen, signals |
 | `src/Grid.zig` | a double-buffered cell grid that diffs frames into escape sequences |
 | `src/input.zig` | key decoding for the list, and mouse reports |
-| `src/App.zig` | layout, the event loop, the two-level list |
+| `src/App.zig` | layout, the event loop, the two-level list, config reloading |
 | `src/Agent.zig` | one-shot agent commands, task queries and JSON responses |
 | `src/Ipc.zig` | directory-scoped socket, instance lock, nonblocking clients |
 

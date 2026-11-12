@@ -128,7 +128,9 @@ pub fn name(self: *const Task) []const u8 {
 /// the stream, which lives inside the task.
 fn fromHandler(h: *ghostty.TerminalStream.Handler) *Task {
     const stream: *ghostty.TerminalStream = @fieldParentPtr("handler", h);
-    return @fieldParentPtr("stream", stream);
+    // The stream is less aligned than the Task, but every Task comes from
+    // `gpa.create`, so the pointer back is always Task-aligned.
+    return @alignCast(@fieldParentPtr("stream", stream));
 }
 
 fn effectWritePty(h: *ghostty.TerminalStream.Handler, data: []const u8) void {

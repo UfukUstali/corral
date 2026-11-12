@@ -26,7 +26,7 @@ not mean twenty dev servers.
 
 ## Building
 
-Needs Zig 0.17, which Ghostty 1.4 requires. `shell.nix` provides it, from the
+Needs Zig 0.17, which libghostty-vt 1.0 requires. `shell.nix` provides it, from the
 nixpkgs pinned in `flake.lock`:
 
 ```sh

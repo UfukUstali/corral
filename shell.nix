@@ -20,7 +20,7 @@ pkgs.mkShell {
   name = "corral";
 
   packages = [
-    # Named exactly: ghostty 1.4 needs zig 0.17, and a nixpkgs without this
+    # Named exactly: libghostty-vt 1.0 needs zig 0.17, and a nixpkgs without this
     # attribute should fail here rather than hand you some other zig.
     pkgs.zig_0_17
     pkgs.zls

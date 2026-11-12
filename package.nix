@@ -2,7 +2,7 @@
   lib,
   stdenv,
   stdenvNoCC,
-  # Named exactly, not `zig`: ghostty 1.4 needs zig 0.17, and any other minor
+  # Named exactly, not `zig`: libghostty-vt 1.0 needs zig 0.17, and any other minor
   # breaks the build in confusing ways. A nixpkgs without this attribute should
   # fail, not substitute.
   zig_0_17,
@@ -11,7 +11,7 @@
 
   # Hash of the fetched zig dependency tree; see `deps` below for how to refresh
   # it after touching build.zig.zon.
-  depsHash ? "sha256-ka8+7HVlK2XMk7LwH4c8C2IW70kP69xM5QGJBbfvHxA=",
+  depsHash ? "sha256-CARmpxdKI4KwH2GujCZFCHQtrlEq9a4NuzV2X+U3QgM=",
 }:
 
 let

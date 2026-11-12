@@ -800,10 +800,10 @@ fn paint(self: *App) !void {
     self.term.writeAll(frame);
 }
 
-const dim: Grid.Style = .{ .fg_color = .{ .palette = 8 } };
-const green: Grid.Style = .{ .fg_color = .{ .palette = 2 } };
-const yellow: Grid.Style = .{ .fg_color = .{ .palette = 3 } };
-const red: Grid.Style = .{ .fg_color = .{ .palette = 1 } };
+const dim: Grid.Style = .{ .fg_color = .palette(8) };
+const green: Grid.Style = .{ .fg_color = .palette(2) };
+const yellow: Grid.Style = .{ .fg_color = .palette(3) };
+const red: Grid.Style = .{ .fg_color = .palette(1) };
 
 fn dotStyle(state: Task.State, failed: bool) Grid.Style {
     return switch (state) {
@@ -982,14 +982,14 @@ fn blit(self: *App, t: *Task) void {
                 // A cell with no text but a background, which is how a run
                 // of coloured blanks is stored.
                 .bg_color_palette => {
-                    style.bg_color = .{ .palette = raw.content.color_palette.data };
+                    style.bg_color = .palette(raw.content.color_palette.data);
                     text_buf[0] = ' ';
                     text_len = 1;
                     width = 1;
                 },
                 .bg_color_rgb => {
                     const rgb = raw.content.color_rgb;
-                    style.bg_color = .{ .rgb = .{ .r = rgb.r, .g = rgb.g, .b = rgb.b } };
+                    style.bg_color = .rgb(.{ .r = rgb.r, .g = rgb.g, .b = rgb.b });
                     text_buf[0] = ' ';
                     text_len = 1;
                     width = 1;

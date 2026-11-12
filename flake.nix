@@ -18,7 +18,7 @@
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      # Ghostty 1.4 needs zig 0.17 exactly. Rather than pinning a nixpkgs that
+      # libghostty-vt 1.0 needs zig 0.17 exactly. Rather than pinning a nixpkgs that
       # has it, take zig from the nixpkgs doing the installing — and fail
       # loudly rather than fall back to some other zig if that attribute ever
       # goes away.

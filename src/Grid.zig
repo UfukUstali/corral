@@ -284,7 +284,7 @@ fn writeColor(
     color: Style.Color,
     role: ColorRole,
 ) Allocator.Error!void {
-    switch (color) {
+    switch (color.value()) {
         // SGR 0 already put us back to the default, so there is nothing to
         // say. Passing the default through as 39/49 rather than a concrete
         // colour is the point: the user's own theme decides.
@@ -359,7 +359,7 @@ test "styles are emitted once per run" {
     defer g.deinit(testing.allocator);
 
     g.clear();
-    _ = g.text(0, 0, "abc", 20, .{ .fg_color = .{ .palette = 2 }, .flags = .{ .bold = true } });
+    _ = g.text(0, 0, "abc", 20, .{ .fg_color = .palette(2), .flags = .{ .bold = true } });
     const frame = try g.flush(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, frame, "\x1b[0;1;32m"));
@@ -406,6 +406,6 @@ test "default colors are left to the host theme" {
     try testing.expectEqualStrings("\x1b[0m", buf.items);
 
     buf.clearRetainingCapacity();
-    try writeStyle(testing.allocator, &buf, .{ .fg_color = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } });
+    try writeStyle(testing.allocator, &buf, .{ .fg_color = .rgb(.{ .r = 1, .g = 2, .b = 3 }) });
     try testing.expectEqualStrings("\x1b[0;38;2;1;2;3m", buf.items);
 }
